@@ -1,0 +1,21 @@
+{
+  "name": "FinanceApp - Gestión Financiera",
+  "short_name": "FinanceApp",
+  "description": "Gestión financiera personal y compartida con pareja",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e293b",
+  "theme_color": "#0f766e",
+  "orientation": "portrait-primary",
+  "categories": ["finance", "productivity"],
+  "lang": "es",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22 fill=%22%230f766e%22>💰</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

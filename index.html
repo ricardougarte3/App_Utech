@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#0f766e">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="FinanceApp">
+    <meta name="application-name" content="FinanceApp">
+    <meta name="msapplication-TileColor" content="#0f766e">
+    <meta name="msapplication-tap-highlight" content="no">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Icons -->
+    <link rel="icon" type="image/png" sizes="32x32" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
+    <title>FinanceApp - Gestión Financiera Personal</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Estilos personalizados -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- ================================================ -->
+    <!-- LOGIN SCREEN -->
+    <!-- ================================================ -->
+    <div id="loginScreen" class="login-container">
+        <div class="login-card slide-up">
+            <div class="login-logo">
+                <i class="fas fa-chart-line"></i>
+            </div>
+            <h1 class="login-title">FinanceApp</h1>
+            <p class="login-subtitle">Gestión financiera personal y compartida</p>
+            
+            <button id="googleLoginBtn" class="btn-google">
+                <svg class="google-icon" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+                Continuar con Google
+            </button>
+      <div id="fileProtocolWarning" class="mt-4 hidden text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+        <b>Nota:</b> Si abrís la app como archivo local (ej: <code>F:/.../index.html</code>), el login de Google suele bloquearse.
+        Usá <b>GitHub Pages</b> (https) o un servidor local (<b>localhost</b>) para probar.
+      </div>
+
+      <div class="mt-5 pt-5 border-t border-gray-200">
+        <div class="text-sm font-semibold text-gray-700 mb-2">Acceso rápido (sin Google)</div>
+        <div class="grid gap-3">
+          <input id="loginName" class="form-input" type="text" placeholder="Tu nombre (ej: Alve)" />
+          <input id="loginEmail" class="form-input" type="email" placeholder="Tu email (ej: alve@gmail.com)" />
+          <button id="emailLoginBtn" class="btn btn-accent w-full">
+            <i class="fas fa-right-to-bracket"></i> Ingresar
+          </button>
+          <div class="text-xs text-gray-500">
+            Esto crea tu perfil en la app y mantiene tus datos separados por email.
+          </div>
+        </div>
+      </div>
+
+            
+            <p class="text-xs text-gray-500 mt-4">
+                Al continuar, aceptas nuestras políticas de privacidad
+            </p>
+        </div>
+    </div>
+
+    <!-- ================================================ -->
+    <!-- MAIN APPLICATION -->
+    <!-- ================================================ -->
+    <div id="mainApp" class="app-container hidden">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <span>FinanceApp</span>
+                </div>
+            </div>
+            
+            <div class="user-profile">
+                <div class="user-avatar" id="userAvatar">
+                    <span id="userInitials">JD</span>
+                </div>
+                <div class="user-info">
+                    <div class="user-name" id="userName">John Doe</div>
+                    <div class="user-email" id="userEmail">john@example.com</div>
+                </div>
+            </div>
+            
+            <nav class="nav-menu">
+                <div class="nav-section">
+                    <div class="nav-title">Menú Principal</div>
+                    <a href="#" class="nav-item active" data-section="dashboard">
+                        <div class="nav-icon"><i class="fas fa-home"></i></div>
+                        <span>Dashboard</span>
+                    </a>
+                    <a href="#" class="nav-item" data-section="incomes">
+                        <div class="nav-icon"><i class="fas fa-arrow-up"></i></div>
+                        <span>Ingresos</span>
+                    </a>
+                    <a href="#" class="nav-item" data-section="expenses">
+                        <div class="nav-icon"><i class="fas fa-arrow-down"></i></div>
+                        <span>Mis Gastos</span>
+                    </a>
+                    <a href="#" class="nav-item" data-section="shared">
+                        <div class="nav-icon"><i class="fas fa-users"></i></div>
+                        <span>Gastos Compartidos</span>
+                        <span class="badge badge-danger ml-auto" id="sharedBadge" style="display: none;">0</span>
+                    </a>
+                </div>
+                
+                <div class="nav-section">
+                    <div class="nav-title">Finanzas</div>
+                    <a href="#" class="nav-item" data-section="cards">
+                        <div class="nav-icon"><i class="fas fa-credit-card"></i></div>
+                        <span>Tarjetas de Crédito</span>
+                    </a>
+                    <a href="#" class="nav-item" data-section="budgets">
+                        <div class="nav-icon"><i class="fas fa-chart-pie"></i></div>
+                        <span>Presupuestos</span>
+                    </a>
+                    <a href="#" class="nav-item" data-section="projections">
+                        <div class="nav-icon"><i class="fas fa-calendar-alt"></i></div>
+                        <span>Proyecciones</span>
+                    </a>
+                    <a href="#" class="nav-item" data-section="reports">
+                        <div class="nav-icon"><i class="fas fa-file-alt"></i></div>
+                        <span>Reportes</span>
+                    </a>
+                </div>
+                
+                <div class="nav-section">
+                    <div class="nav-title">Configuración</div>
+                    <a href="#" class="nav-item" data-section="settings">
+                        <div class="nav-icon"><i class="fas fa-cog"></i></div>
+                        <span>Configuración</span>
+                    </a>
+                    <a href="#" class="nav-item" id="logoutBtn">
+                        <div class="nav-icon"><i class="fas fa-sign-out-alt"></i></div>
+                        <span>Cerrar Sesión</span>
+                    </a>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <div class="top-bar">
+                <button class="menu-toggle" id="menuToggle">
+                    <i class="fas fa-bars"></i>
+                </button>
+                
+                <div class="flex items-center gap-3">
+                    <button class="theme-toggle relative" id="notifBtn" title="Notificaciones">
+  <i class="fas fa-bell"></i>
+  <span id="notifBadge" class="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] rounded-full px-1.5 py-0.5" style="display:none;">0</span>
+</button>
+
+<button class="theme-toggle" id="themeToggle" title="Cambiar tema">
+                        <i class="fas fa-moon"></i>
+                    </button>
+                    <div class="flex items-center gap-2 text-sm text-gray-600">
+                        <i class="fas fa-coins"></i>
+                        <span id="currencyDisplay">USD</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================================================ -->
+            <!-- DASHBOARD SECTION -->
+            <!-- ================================================ -->
+            <section id="dashboardSection" class="dashboard">
+                <h1 class="page-title">Dashboard</h1>
+                <p class="page-subtitle">Resumen de tu situación financiera</p>
+
+                <!-- Alertas -->
+                <div id="alertsContainer"></div>
+
+                <!-- Cards de resumen -->
+                <div class="cards-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Balance Total</div>
+                            <div class="card-icon primary">
+                                <i class="fas fa-wallet"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="totalBalance">$0.00</div>
+                        <div class="card-change positive">
+                            <i class="fas fa-arrow-up"></i>
+                            <span>+12.5% vs mes anterior</span>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Ingresos del Mes</div>
+                            <div class="card-icon success">
+                                <i class="fas fa-arrow-up"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="monthlyIncome">$0.00</div>
+                        <div class="card-change positive">
+                            <i class="fas fa-plus"></i>
+                            <span>3 fuentes de ingreso</span>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Gastos del Mes</div>
+                            <div class="card-icon warning">
+                                <i class="fas fa-arrow-down"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="monthlyExpenses">$0.00</div>
+                        <div class="card-change negative">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <span>85% del presupuesto</span>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Deudas Compartidas</div>
+                            <div class="card-icon danger">
+                                <i class="fas fa-handshake"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="sharedDebts">$0.00</div>
+                        <div class="card-change">
+                            <i class="fas fa-user"></i>
+                            <span id="partnerName">Sin pareja vinculada</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gráficos -->
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <h3 class="chart-title">Distribución de Gastos</h3>
+                            <select class="form-select" style="width: auto;" id="expensePeriod">
+                                <option value="month">Este mes</option>
+                                <option value="quarter">Último trimestre</option>
+                                <option value="year">Último año</option>
+                            </select>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="expensesChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <h3 class="chart-title">Evolución Mensual</h3>
+                            <select class="form-select" style="width: auto;" id="trendPeriod">
+                                <option value="6">Últimos 6 meses</option>
+                                <option value="12">Último año</option>
+                            </select>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="trendChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Actividad reciente -->
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title">Actividad Reciente</h3>
+                        <button class="btn btn-secondary btn-sm">
+                            <i class="fas fa-eye"></i>
+                            Ver todo
+                        </button>
+                    </div>
+                    <div id="recentActivity">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-inbox text-4xl mb-3"></i>
+                            <p>No hay actividad reciente</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- INGRESOS SECTION -->
+            <!-- ================================================ -->
+            <section id="incomesSection" class="dashboard hidden">
+                <h1 class="page-title">Ingresos</h1>
+                <p class="page-subtitle">Gestiona tus fuentes de ingreso</p>
+                
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title">Mis Ingresos</h3>
+                        <button class="btn btn-accent" id="addIncomeBtn">
+                            <i class="fas fa-plus"></i>
+                            Nuevo Ingreso
+                        </button>
+                    </div>
+                    <div id="incomesList">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-plus-circle text-4xl mb-3"></i>
+                            <p class="mb-3">No tienes ingresos registrados</p>
+                            <button class="btn btn-accent btn-sm" onclick="document.getElementById('addIncomeBtn').click()">
+                                Agregar primer ingreso
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- GASTOS SECTION -->
+            <!-- ================================================ -->
+            <section id="expensesSection" class="dashboard hidden">
+                <h1 class="page-title">Mis Gastos</h1>
+                <p class="page-subtitle">Registra y clasifica tus gastos personales</p>
+                
+                <div class="cards-grid mb-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Gastos Fijos</div>
+                            <div class="card-icon primary">
+                                <i class="fas fa-calendar-alt"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="fixedExpenses">$0.00</div>
+                        <div class="text-sm text-gray-500">
+                            <span id="fixedCount">0</span> gastos recurrentes
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Gastos Variables</div>
+                            <div class="card-icon warning">
+                                <i class="fas fa-shopping-cart"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="variableExpenses">$0.00</div>
+                        <div class="text-sm text-gray-500">
+                            <span id="variableCount">0</span> gastos ocasionales
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Pagos con Tarjeta</div>
+                            <div class="card-icon danger">
+                                <i class="fas fa-credit-card"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="creditExpenses">$0.00</div>
+                        <div class="text-sm text-gray-500">
+                            <span id="creditCount">0</span> cuotas pendientes
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tabs mb-4" id="expenseTabs">
+                    <button class="tab active" data-tab="all">Todos</button>
+                    <button class="tab" data-tab="fixed">Fijos</button>
+                    <button class="tab" data-tab="variable">Variables</button>
+                    <button class="tab" data-tab="credit">Crédito</button>
+                </div>
+                
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title" id="expenseListTitle">Todos los Gastos</h3>
+                        <div class="data-actions">
+                            <select class="form-select btn-sm" style="width: auto;" id="expenseFilter">
+                                <option value="all">Todas las categorías</option>
+                            </select>
+                            <button class="btn btn-accent" id="addExpenseBtn">
+                                <i class="fas fa-plus"></i>
+                                Nuevo Gasto
+                            </button>
+                        </div>
+                    </div>
+                    <div id="expensesList">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-receipt text-4xl mb-3"></i>
+                            <p class="mb-3">No tienes gastos registrados</p>
+                            <button class="btn btn-accent btn-sm" onclick="document.getElementById('addExpenseBtn').click()">
+                                Agregar primer gasto
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- GASTOS COMPARTIDOS SECTION -->
+            <!-- ================================================ -->
+            <section id="sharedSection" class="dashboard hidden">
+                <h1 class="page-title">Gastos Compartidos</h1>
+                <p class="page-subtitle">Gestiona gastos con tu pareja vinculada</p>
+                
+                <div id="noPartnerSection">
+                    <div class="card text-center py-12">
+                        <div class="text-6xl text-gray-300 mb-4">
+                            <i class="fas fa-user-friends"></i>
+                        </div>
+                        <h3 class="text-xl font-semibold mb-2">Vincula tu cuenta con tu pareja</h3>
+                        <p class="text-gray-500 mb-6">Para compartir gastos, ambos deben vincular sus cuentas</p>
+                        <div class="flex flex-col sm:flex-row gap-3 justify-center">
+                            <button class="btn btn-accent" id="invitePartnerBtn">
+                                <i class="fas fa-user-plus"></i>
+                                Invitar Pareja
+                            </button>
+                            <button class="btn btn-secondary" id="acceptInviteBtn">
+                                <i class="fas fa-check"></i>
+                                Aceptar Invitación
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="partnerSection" class="hidden">
+                    <div class="cards-grid mb-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Tú debes</div>
+                                <div class="card-icon warning">
+                                    <i class="fas fa-arrow-up"></i>
+                                </div>
+                            </div>
+                            <div class="card-value text-warning" id="youOwe">$0.00</div>
+                            <div class="text-sm text-gray-500">
+                                A <span id="partnerNameDisplay">Tu pareja</span>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title">Te deben</div>
+                                <div class="card-icon success">
+                                    <i class="fas fa-arrow-down"></i>
+                                </div>
+                            </div>
+                            <div class="card-value text-success" id="owedToYou">$0.00</div>
+                            <div class="text-sm text-gray-500">
+                                De <span id="partnerNameDisplay2">Tu pareja</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="data-card">
+                        <div class="data-header">
+                            <h3 class="data-title">Gastos Compartidos</h3>
+                            <div class="data-actions">
+                                <button class="btn btn-secondary btn-sm" id="settleDebtsBtn">
+                                    <i class="fas fa-handshake"></i>
+                                    Liquidar Deudas
+                                </button>
+                                <button class="btn btn-accent" id="addSharedExpenseBtn">
+                                    <i class="fas fa-plus"></i>
+                                    Nuevo Gasto Compartido
+                                </button>
+                            </div>
+                        </div>
+                        <div id="sharedExpensesList">
+                            <div class="p-6 text-center text-gray-500">
+                                <i class="fas fa-receipt text-4xl mb-3"></i>
+                                <p>No hay gastos compartidos</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- TARJETAS DE CRÉDITO SECTION -->
+            <!-- ================================================ -->
+            <section id="cardsSection" class="dashboard hidden">
+                <h1 class="page-title">Tarjetas de Crédito</h1>
+                <p class="page-subtitle">Gestiona tus tarjetas y pagos</p>
+                
+                <div class="data-card mb-6">
+                    <div class="data-header">
+                        <h3 class="data-title">Mis Tarjetas</h3>
+                        <button class="btn btn-accent" id="addCardBtn">
+                            <i class="fas fa-plus"></i>
+                            Agregar Tarjeta
+                        </button>
+                    </div>
+                    <div id="cardsList">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-credit-card text-4xl mb-3"></i>
+                            <p class="mb-3">No tienes tarjetas registradas</p>
+                            <button class="btn btn-accent btn-sm" onclick="document.getElementById('addCardBtn').click()">
+                                Agregar primera tarjeta
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title">Próximos Vencimientos</h3>
+                    </div>
+                    <div id="upcomingPayments">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-calendar-check text-4xl mb-3"></i>
+                            <p>No hay pagos próximos</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- PRESUPUESTOS SECTION -->
+            <!-- ================================================ -->
+            <section id="budgetsSection" class="dashboard hidden">
+                <h1 class="page-title">Presupuestos</h1>
+                <p class="page-subtitle">Define límites mensuales por categoría</p>
+                
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title">Presupuestos por Categoría</h3>
+                        <button class="btn btn-accent" id="addBudgetBtn">
+                            <i class="fas fa-plus"></i>
+                            Nuevo Presupuesto
+                        </button>
+                    </div>
+                    <div id="budgetsList">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-chart-pie text-4xl mb-3"></i>
+                            <p class="mb-3">No tienes presupuestos definidos</p>
+                            <button class="btn btn-accent btn-sm" onclick="document.getElementById('addBudgetBtn').click()">
+                                Crear primer presupuesto
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- PROYECCIONES Y PAGOS FUTUROS SECTION -->
+            <!-- ================================================ -->
+            <section id="projectionsSection" class="dashboard hidden">
+                <h1 class="page-title">Proyecciones y Pagos</h1>
+                <p class="page-subtitle">Visualiza tus próximos pagos y deudas del mes</p>
+                
+                <!-- Cards de resumen de próximos pagos -->
+                <div class="cards-grid mb-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Total a Pagar Este Mes</div>
+                            <div class="card-icon warning">
+                                <i class="fas fa-calendar-alt"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="totalToPay">$0.00</div>
+                        <div class="text-sm text-gray-500" id="totalToPayBreakdown">
+                            Tú: $0.00 | Pareja: $0.00
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Próximo Vencimiento</div>
+                            <div class="card-icon danger">
+                                <i class="fas fa-exclamation-triangle"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="nextDueDate">-</div>
+                        <div class="text-sm text-gray-500" id="nextDueAmount">$0.00</div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Cuotas Pendientes</div>
+                            <div class="card-icon primary">
+                                <i class="fas fa-credit-card"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="pendingInstallments">0</div>
+                        <div class="text-sm text-gray-500">Total: <span id="pendingInstallmentsAmount">$0.00</span></div>
+                    </div>
+                </div>
+                
+                <!-- Tabla detallada de pagos -->
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title">Detalle de Pagos del Mes</h3>
+                        <div class="data-actions">
+                            <select class="form-select btn-sm" id="projectionMonthFilter" style="width: auto;">
+                                <option value="current">Este mes</option>
+                                <option value="next">Próximo mes</option>
+                                <option value="+2">En 2 meses</option>
+                            </select>
+                            <select class="form-select btn-sm" id="projectionTypeFilter" style="width: auto;">
+                                <option value="all">Todos</option>
+                                <option value="fixed">Fijos</option>
+                                <option value="credit">Crédito</option>
+                                <option value="shared">Compartidos</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm" id="projectionsTable">
+                            <thead class="bg-gray-50 border-b border-gray-200">
+                                <tr>
+                                    <th class="text-left p-3 font-semibold text-gray-700">Descripción</th>
+                                    <th class="text-left p-3 font-semibold text-gray-700">Fecha</th>
+                                    <th class="text-right p-3 font-semibold text-gray-700">Total</th>
+                                    <th class="text-right p-3 font-semibold text-gray-700">Mi Parte</th>
+                                    <th class="text-right p-3 font-semibold text-gray-700">Parte Pareja</th>
+                                    <th class="text-center p-3 font-semibold text-gray-700">Tipo</th>
+                                </tr>
+                            </thead>
+                            <tbody id="projectionsTableBody">
+                                <tr>
+                                    <td colspan="6" class="p-6 text-center text-gray-500">
+                                        <i class="fas fa-calendar-check text-4xl mb-3"></i>
+                                        <p>No hay pagos programados</p>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- Resumen por categoría -->
+                <div class="data-card mt-6">
+                    <div class="data-header">
+                        <h3 class="data-title">Resumen por Categoría</h3>
+                    </div>
+                    <div id="categorySummary">
+                        <div class="p-6 text-center text-gray-500">
+                            <i class="fas fa-chart-pie text-4xl mb-3"></i>
+                            <p>No hay datos para mostrar</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- REPORTES SECTION -->
+            <!-- ================================================ -->
+            <section id="reportsSection" class="dashboard hidden">
+                <h1 class="page-title">Reportes</h1>
+                <p class="page-subtitle">Analiza tu historial financiero</p>
+                
+                <div class="cards-grid mb-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Balance Anual</div>
+                            <div class="card-icon primary">
+                                <i class="fas fa-calendar"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="yearlyBalance">$0.00</div>
+                        <div class="text-sm text-gray-500">Año en curso</div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Ahorro Total</div>
+                            <div class="card-icon success">
+                                <i class="fas fa-piggy-bank"></i>
+                            </div>
+                        </div>
+                        <div class="card-value" id="totalSavings">$0.00</div>
+                        <div class="text-sm text-gray-500">Desde el inicio</div>
+                    </div>
+                </div>
+                
+                <div class="data-card">
+                    <div class="data-header">
+                        <h3 class="data-title">Generar Reporte</h3>
+                    </div>
+                    <div class="p-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="form-group">
+                                <label class="form-label">Tipo de Reporte</label>
+                                <select class="form-select" id="reportType">
+                                    <option value="summary">Resumen Mensual</option>
+                                    <option value="detailed">Detallado por Categoría</option>
+                                    <option value="expenses">Solo Gastos</option>
+                                    <option value="incomes">Solo Ingresos</option>
+                                    <option value="shared">Gastos Compartidos</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Período</label>
+                                <select class="form-select" id="reportPeriod">
+                                    <option value="current">Mes actual</option>
+                                    <option value="last">Mes anterior</option>
+                                    <option value="quarter">Último trimestre</option>
+                                    <option value="custom">Personalizado</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group hidden" id="customDateRange">
+                                <label class="form-label">Fecha Inicio</label>
+                                <input type="date" class="form-input" id="startDate">
+                            </div>
+                            
+                            <div class="form-group hidden" id="customDateRange2">
+                                <label class="form-label">Fecha Fin</label>
+                                <input type="date" class="form-input" id="endDate">
+                            </div>
+                        </div>
+                        
+                        <div class="flex gap-3 mt-6">
+                            <button class="btn btn-accent" id="generateReportBtn">
+                                <i class="fas fa-chart-bar"></i>
+                                Generar Reporte
+                            </button>
+                            <button class="btn btn-secondary" id="exportExcelBtn">
+                                <i class="fas fa-file-excel"></i>
+                                Exportar Excel
+                            </button>
+                            <button class="btn btn-secondary" id="exportPdfBtn">
+                                <i class="fas fa-file-pdf"></i>
+                                Exportar PDF
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="reportResults" class="mt-6 hidden">
+                    <div class="data-card">
+                        <div class="data-header">
+                            <h3 class="data-title">Resultados del Reporte</h3>
+                        </div>
+                        <div id="reportContent"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================ -->
+            <!-- CONFIGURACIÓN SECTION -->
+            <!-- ================================================ -->
+            <section id="settingsSection" class="dashboard hidden">
+                <h1 class="page-title">Configuración</h1>
+                <p class="page-subtitle">Personaliza tu experiencia</p>
+                
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="data-card">
+                        <div class="data-header">
+                            <h3 class="data-title">Perfil de Usuario</h3>
+                        </div>
+                        <div class="p-6">
+                            <div class="form-group">
+                                <label class="form-label">Nombre completo</label>
+                                <input type="text" class="form-input" id="profileName" placeholder="Tu nombre">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Email</label>
+                                <input type="email" class="form-input" id="profileEmail" readonly>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Moneda predeterminada</label>
+                                <select class="form-select" id="profileCurrency">
+                                    <option value="USD">USD - Dólar Americano</option>
+                                    <option value="EUR">EUR - Euro</option>
+                                    <option value="GBP">GBP - Libra Esterlina</option>
+                                    <option value="JPY">JPY - Yen Japonés</option>
+                                    <option value="CAD">CAD - Dólar Canadiense</option>
+                                    <option value="AUD">AUD - Dólar Australiano</option>
+                                    <option value="MXN">MXN - Peso Mexicano</option>
+                                    <option value="COP">COP - Peso Colombiano</option>
+                                    <option value="ARS">ARS - Peso Argentino</option>
+                                    <option value="PEN">PEN - Sol Peruano</option>
+                                    <option value="CLP">CLP - Peso Chileno</option>
+                                    <option value="BRL">BRL - Real Brasileño</option>
+                                </select>
+                            </div>
+                            
+                            <button class="btn btn-accent" id="saveProfileBtn">
+                                <i class="fas fa-save"></i>
+                                Guardar Cambios
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="data-card">
+                        <div class="data-header">
+                            <h3 class="data-title">Preferencias</h3>
+                        </div>
+                        <div class="p-6 space-y-4">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <div class="font-medium">Modo Oscuro</div>
+                                    <div class="text-sm text-gray-500">Cambia el tema de la aplicación</div>
+                                </div>
+                                <label class="form-switch">
+                                    <input type="checkbox" id="darkModeToggle">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <div class="font-medium">Notificaciones por Email</div>
+                                    <div class="text-sm text-gray-500">Recibe alertas de presupuestos y vencimientos</div>
+                                </div>
+                                <label class="form-switch">
+                                    <input type="checkbox" id="emailNotifications" checked>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <div class="font-medium">Recordatorios Automáticos</div>
+                                    <div class="text-sm text-gray-500">Alertas para pagos recurrentes</div>
+                                </div>
+                                <label class="form-switch">
+                                    <input type="checkbox" id="autoReminders" checked>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="data-card">
+                        <div class="data-header">
+                            <h3 class="data-title">Categorías de Gastos</h3>
+                        </div>
+                        <div class="p-6">
+                            <div id="categoriesList" class="space-y-2 mb-4">
+                                <!-- Categorías dinámicas -->
+                            </div>
+                            <div class="flex gap-2">
+                                <input type="text" class="form-input flex-1" id="newCategoryName" placeholder="Nueva categoría">
+                                <select class="form-select" id="newCategoryType" style="width: auto;">
+                                    <option value="fixed">Fijo</option>
+                                    <option value="variable">Variable</option>
+                                </select>
+                                <button class="btn btn-accent" id="addCategoryBtn">
+                                    <i class="fas fa-plus"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="data-card">
+                        <div class="data-header">
+                            <h3 class="data-title">Datos y Privacidad</h3>
+                        </div>
+                        <div class="p-6 space-y-3">
+                            <button class="btn btn-secondary w-full" id="exportDataBtn">
+                                <i class="fas fa-download"></i>
+                                Exportar Mis Datos
+                            </button>
+                            
+                            <button class="btn btn-secondary w-full" id="backupDataBtn">
+                                <i class="fas fa-cloud-upload-alt"></i>
+                                Hacer Backup Manual
+                            </button>
+                            
+                            <hr class="border-gray-200">
+                            
+                            <button class="btn btn-danger w-full" id="deleteAccountBtn">
+                                <i class="fas fa-trash"></i>
+                                Eliminar Cuenta
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ================================================ -->
+    <!-- MODALES -->
+    <!-- ================================================ -->
+
+    <!-- Modal: Nuevo Ingreso -->
+    <div class="modal-overlay" id="incomeModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Nuevo Ingreso</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="incomeForm">
+                    <div class="form-group">
+                        <label class="form-label">Nombre de la fuente</label>
+                        <input type="text" class="form-input" name="name" placeholder="Ej: Sueldo principal" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Monto</label>
+                        <input type="number" class="form-input" name="amount" step="0.01" placeholder="0.00" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Frecuencia</label>
+                        <select class="form-select" name="frequency" required>
+                            <option value="">Seleccionar frecuencia</option>
+                            <option value="weekly">Semanal</option>
+                            <option value="biweekly">Quincenal</option>
+                            <option value="monthly">Mensual</option>
+                            <option value="bimonthly">Bimestral</option>
+                            <option value="quarterly">Trimestral</option>
+                            <option value="yearly">Anual</option>
+                            <option value="onetime">Único</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Fecha</label>
+                        <input type="date" class="form-input" name="date" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Descripción (opcional)</label>
+                        <textarea class="form-textarea" name="description" placeholder="Agrega una descripción..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-close">Cancelar</button>
+                <button class="btn btn-accent" id="saveIncomeBtn">
+                    <i class="fas fa-save"></i>
+                    Guardar Ingreso
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Nuevo Gasto -->
+    <div class="modal-overlay" id="expenseModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Nuevo Gasto</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="expenseForm">
+                    <div class="form-group">
+                        <label class="form-label">Descripción</label>
+                        <input type="text" class="form-input" name="description" placeholder="Ej: Supermercado" required>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="form-group">
+                            <label class="form-label">Monto</label>
+                            <input type="number" class="form-input" name="amount" step="0.01" placeholder="0.00" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Fecha</label>
+                            <input type="date" class="form-input" name="date" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Categoría</label>
+                        <select class="form-select" name="category" required>
+                            <option value="">Seleccionar categoría</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Tipo de Gasto</label>
+                        <select class="form-select" name="type" required>
+                            <option value="">Seleccionar tipo</option>
+                            <option value="fixed">Fijo (recurrente)</option>
+                            <option value="variable">Variable (ocasional)</option>
+                            <option value="credit">Tarjeta de Crédito</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Método de Pago</label>
+                        <select class="form-select" name="paymentMethod" required>
+                            <option value="">Seleccionar método</option>
+                            <option value="cash">Efectivo</option>
+                            <option value="debit">Débito</option>
+                            <option value="credit">Crédito</option>
+                            <option value="transfer">Transferencia</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Campos para tarjeta de crédito -->
+                    <div id="creditCardFields" class="hidden">
+                        <div class="form-group">
+                            <label class="form-label">Tarjeta de Crédito</label>
+                            <select class="form-select" name="creditCard">
+                                <option value="">Seleccionar tarjeta</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Número de Cuotas</label>
+                            <input type="number" class="form-input" name="installments" min="1" max="48" placeholder="1" value="1">
+                        </div>
+                    </div>
+                    
+                    <!-- Checkbox para gasto compartido -->
+                    <div class="form-group">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" class="form-checkbox" name="isShared" id="isSharedCheck">
+                            <span>¿Es un gasto compartido?</span>
+                        </label>
+                    </div>
+                    
+                    <!-- Campos para gasto compartido -->
+                    <div id="sharedFields" class="hidden">
+                        <div class="form-group">
+                            <label class="form-label">Porcentaje que pagas tú</label>
+                            <select class="form-select" name="sharedPercentage">
+                                <option value="50">50% - Mitad mitad</option>
+                                <option value="100">100% - Lo pagas tú completo</option>
+                                <option value="0">0% - Lo paga tu pareja completo</option>
+                                <option value="custom">Personalizado</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group hidden" id="customPercentageField">
+                            <label class="form-label">Tu porcentaje (%)</label>
+                            <input type="number" class="form-input" name="customPercentage" min="0" max="100" placeholder="50">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-close">Cancelar</button>
+                <button class="btn btn-accent" id="saveExpenseBtn">
+                    <i class="fas fa-save"></i>
+                    Guardar Gasto
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Nueva Tarjeta -->
+    <div class="modal-overlay" id="cardModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Agregar Tarjeta de Crédito</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="cardForm">
+                    <div class="form-group">
+                        <label class="form-label">Nombre del Banco</label>
+                        <input type="text" class="form-input" name="bankName" placeholder="Ej: Banco Santander" required>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="form-group">
+                            <label class="form-label">Últimos 4 dígitos</label>
+                            <input type="text" class="form-input" name="last4Digits" maxlength="4" placeholder="1234" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Límite de Crédito</label>
+                            <input type="number" class="form-input" name="creditLimit" step="0.01" placeholder="0.00">
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="form-group">
+                            <label class="form-label">Fecha de Cierre</label>
+                            <input type="number" class="form-input" name="closingDay" min="1" max="31" placeholder="15" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Fecha de Vencimiento</label>
+                            <input type="number" class="form-input" name="dueDay" min="1" max="31" placeholder="5" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Tipo de Tarjeta</label>
+                        <select class="form-select" name="cardType">
+                            <option value="visa">Visa</option>
+                            <option value="mastercard">Mastercard</option>
+                            <option value="amex">American Express</option>
+                            <option value="other">Otra</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-close">Cancelar</button>
+                <button class="btn btn-accent" id="saveCardBtn">
+                    <i class="fas fa-save"></i>
+                    Guardar Tarjeta
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Nuevo Presupuesto -->
+    <div class="modal-overlay" id="budgetModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Nuevo Presupuesto</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="budgetForm">
+                    <div class="form-group">
+                        <label class="form-label">Categoría</label>
+                        <select class="form-select" name="category" required>
+                            <option value="">Seleccionar categoría</option>
+                        </select>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="form-group">
+                            <label class="form-label">Monto Límite</label>
+                            <input type="number" class="form-input" name="amount" step="0.01" placeholder="0.00" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Mes</label>
+                            <input type="month" class="form-input" name="month" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Alerta al (%)</label>
+                        <select class="form-select" name="alertPercentage">
+                            <option value="80">80% - Advertencia</option>
+                            <option value="90">90% - Crítico</option>
+                            <option value="100">100% - Límite alcanzado</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-close">Cancelar</button>
+                <button class="btn btn-accent" id="saveBudgetBtn">
+                    <i class="fas fa-save"></i>
+                    Guardar Presupuesto
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Invitar Pareja -->
+    <div class="modal-overlay" id="inviteModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Invitar Pareja</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Email de tu pareja</label>
+                    <input type="email" class="form-input" id="partnerEmail" placeholder="pareja@example.com" required>
+                </div>
+                
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle"></i>
+                    <div>
+                        <strong>Importante:</strong> Tu pareja debe tener una cuenta en FinanceApp para aceptar la invitación.
+                        Se enviará un email de invitación a la dirección proporcionada.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-close">Cancelar</button>
+                <button class="btn btn-accent" id="sendInviteBtn">
+                    <i class="fas fa-paper-plane"></i>
+                    Enviar Invitación
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Aceptar Invitación -->
+    <div class="modal-overlay" id="acceptInviteModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Aceptar Invitación</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Código de invitación</label>
+                    <input type="text" class="form-input" id="inviteCode" placeholder="Ingresa el código que te envió tu pareja" required>
+                </div>
+                
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle"></i>
+                    <div>
+                        Solicita el código de invitación a tu pareja. Una vez vinculados, podrán compartir gastos automáticamente.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-close">Cancelar</button>
+                <button class="btn btn-accent" id="acceptInviteConfirmBtn">
+                    <i class="fas fa-check"></i>
+                    Aceptar Invitación
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================ -->
+    <!-- SCRIPTS -->
+    <!-- ================================================ -->
+    <script src="https://accounts.google.com/gsi/client"></script>
+    <script src="main.js"></script>
+
+  <!-- Modal: Notificaciones -->
+  <div class="modal-overlay" id="notificationsModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Notificaciones</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="text-xs text-gray-500 mb-3">
+          Las solicitudes de gastos compartidos aparecen acá para que las aceptes o rechaces.
+        </div>
+        <div id="notifList" class="space-y-2">
+          <div class="p-6 text-center text-gray-500">
+            <i class="fas fa-bell-slash text-4xl mb-3"></i>
+            <p>No hay notificaciones</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
