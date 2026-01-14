@@ -1,430 +1,865 @@
+
+
+// =========================
+// Toast helper (sin dependencia)
+// =========================
+function ensureToastContainer_() {
+  let c = document.getElementById('toastContainer');
+  if (c) return c;
+  c = document.createElement('div');
+  c.id = 'toastContainer';
+  c.style.position = 'fixed';
+  c.style.top = '16px';
+  c.style.right = '16px';
+  c.style.zIndex = '99999';
+  c.style.display = 'flex';
+  c.style.flexDirection = 'column';
+  c.style.gap = '10px';
+  document.body.appendChild(c);
+  return c;
+}
+
+function showToast(message, type = 'info', ms = 2800) {
+  try {
+    const container = ensureToastContainer_();
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + type;
+    el.style.padding = '10px 12px';
+    el.style.borderRadius = '12px';
+    el.style.boxShadow = '0 8px 24px rgba(0,0,0,.12)';
+    el.style.fontSize = '13px';
+    el.style.maxWidth = '320px';
+    el.style.background = '#111827';
+    el.style.color = '#fff';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-6px)';
+    el.style.transition = 'all .18s ease';
+    if (type === 'success') el.style.background = '#065f46';
+    if (type === 'warning') el.style.background = '#92400e';
+    if (type === 'error') el.style.background = '#7f1d1d';
+    el.textContent = message || '';
+    container.appendChild(el);
+    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
+    setTimeout(() => {
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(-6px)';
+      setTimeout(() => el.remove(), 220);
+    }, ms);
+  } catch (e) {
+    alert(message);
+  }
+}
 /* =========================================================
-   FinanceApp - main.js (Frontend listo para GitHub Pages)
-   - Multiusuario por email (no se mezclan datos)
-   - Pareja: invitación + código (backend Apps Script)
-   - Gasto compartido: solicitud + aceptar/rechazar + notificación in-app
-   - CRUD: Ingresos / Gastos (Editar/Eliminar)
-   - Charts + Dashboard + filtros
-   ---------------------------------------------------------
-   IMPORTANTE:
-   1) Pegá tu URL del Web App (Deploy /exec) en CONFIG.API_URL
-   2) Tu Apps Script debe implementar los actions usados (ver APIService.call)
+   FinanceApp - main.js CONECTADO AL BACKEND REAL
    ========================================================= */
 
 const CONFIG = {
-  // ✅ Pegá acá tu URL del Web App de Apps Script:
-  // Ejemplo: 'https://script.google.com/macros/s/AKfycbx.../exec'
-  API_URL: 'PEGAR_AQUI_TU_URL_DEL_DEPLOY_EXEC',
-
+  API_URL: 'https://script.google.com/macros/s/AKfycbwTgIbfHXI_7qK2d0r-G5a3QdiRxjn72vWuF_et1nZ9vPL18O8B8PuRLrAdyGSTOEpPgQ/exec',
+  
   DEFAULT_CURRENCY: 'ARS',
-  NOTIF_POLL_MS: 15000,      // polling de notificaciones
-  SAVE_LOCAL_FALLBACK: true  // si falla API, usa LocalStorage (solo para pruebas)
+  NOTIF_POLL_MS: 30000,
+  DEBUG: false,
+  USE_FALLBACK: false
 };
 
-// ===============================
-// Estado global
-// ===============================
+// Bloqueo anti doble-click (evita duplicados por clicks repetidos / lag)
+let incomeSaveInFlight = false;
+let expenseSaveInFlight = false;
+
+// 🚀 FUNCIONES BÁSICAS
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+// Escapa HTML para evitar inyección al renderizar texto proveniente del backend
+function escapeHTML(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      case "'": return '&#39;';
+      default: return ch;
+    }
+  });
+}
+
+// Normaliza emails (trim + lowercase). Devuelve "" si viene null/undefined.
+function normEmail(email) {
+  return (email || "").toString().trim().toLowerCase();
+}
+
+// =========================================================
+// META helpers para GASTOS_COMPARTIDOS (sin tocar Code.gs)
+// Guardamos info extra (crédito/cuotas/tarjeta) dentro de la columna "estado" como: META:{...}
+// =========================================================
+function buildSharedMeta(meta) {
+  try {
+    const clean = {};
+    Object.keys(meta || {}).forEach(k => {
+      const v = meta[k];
+      if (v !== undefined && v !== null && v !== '') clean[k] = v;
+    });
+    return 'META:' + JSON.stringify(clean);
+  } catch {
+    return '';
+  }
+}
+
+function parseSharedMeta(estado) {
+  try {
+    if (!estado) return null;
+    const s = String(estado).trim();
+    if (!s.toUpperCase().startsWith('META:')) return null;
+    const jsonStr = s.slice(5).trim();
+    if (!jsonStr) return null;
+    return JSON.parse(jsonStr);
+  } catch {
+    return null;
+  }
+}
+
+
+function filterSharedForUser_(sharedRows, userEmail) {
+  const me = normEmail(userEmail);
+  const rows = Array.isArray(sharedRows) ? sharedRows : [];
+  const filtered = rows.filter(r => {
+    const a = normEmail(r.email_usuario);
+    const b = normEmail(r.email_pareja);
+    return (a && a === me) || (b && b === me);
+  });
+
+  // Dedupe: if mirror exists, prefer the row where email_usuario == me
+  const map = new Map();
+  const score = (r) => (normEmail(r.email_usuario) === me ? 2 : 1);
+
+  filtered.forEach(r => {
+    const meta = parseSharedMeta(r.estado) || {};
+    const key = [
+      String(r.descripcion || '').trim().toLowerCase(),
+      String(r.fecha || '').trim(),
+      String(Number(r.monto || 0)),
+      String(r.categoria || '').trim().toLowerCase(),
+      String(meta.cuota_actual || r.cuota_actual || ''),
+      String(meta.cuotas_totales || r.cuotas_totales || ''),
+      String(meta.tarjeta_id || r.tarjeta_id || ''),
+      String(meta.monto_total || r.monto_total || '')
+    ].join('|');
+
+    const prev = map.get(key);
+    if (!prev || score(r) > score(prev)) map.set(key, r);
+  });
+
+  return Array.from(map.values());
+}
+
+function filterSharedForPair_(sharedRows, emailA, emailB) {
+  const a = normEmail(emailA);
+  const b = normEmail(emailB);
+  const rows = Array.isArray(sharedRows) ? sharedRows : [];
+  return rows.filter(r => {
+    const u = normEmail(r.email_usuario);
+    const p = normEmail(r.email_pareja);
+    return (u === a && p === b) || (u === b && p === a);
+  });
+}
+
+
+
+
+
+
+// Helper para mostrar alerts
+function showAlert(msg, type = 'info', timeout = 3500) {
+  const container = $('#alertsContainer') || (() => {
+    const div = document.createElement('div');
+    div.id = 'alertsContainer';
+    div.className = 'fixed top-20 right-4 z-50 w-96 space-y-2';
+    document.body.appendChild(div);
+    return div;
+  })();
+
+  const id = 'alert_' + Date.now();
+  const cls = type === 'danger' ? 'alert alert-danger' :
+              type === 'success' ? 'alert alert-success' :
+              type === 'warning' ? 'alert alert-warning' : 'alert alert-info';
+  
+  const html = `<div id="${id}" class="${cls} animate-fade-in">
+    <i class="fas fa-circle-info"></i><div>${msg}</div>
+  </div>`;
+  
+  container.insertAdjacentHTML('afterbegin', html);
+  
+  if (timeout) setTimeout(() => $(`#${id}`)?.remove(), timeout);
+}
+
+// Helper para formatear dinero
+function parseAmount(v) {
+  if (v === null || v === undefined) return 0;
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+
+  let s = String(v).trim();
+  if (!s) return 0;
+
+  s = s.replace(/\s+/g, '').replace(/[^0-9,.-]/g, '');
+  
+  if (s.startsWith('(') && s.endsWith(')')) s = '-' + s.slice(1, -1);
+  
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+
+  if (hasComma && hasDot) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma && !hasDot) {
+    s = s.replace(',', '.');
+  }
+
+  const n = parseFloat(s);
+  return isFinite(n) ? n : 0;
+}
+
+function fmtMoney(v) {
+  const cur = APP_STATE.user?.currency || 'ARS';
+  const n = Number(v || 0);
+  try {
+    return new Intl.NumberFormat('es-AR', { 
+      style: 'currency', 
+      currency: cur,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2 
+    }).format(n);
+  } catch {
+    return `$${n.toFixed(2)}`;
+  }
+}
+
+// ==============================
+// Helpers: fechas / meses / ciclos
+// ==============================
+const MONTHS_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function pad2(n){ return String(n).padStart(2,'0'); }
+
+function toYM(d){
+  const dt = (d instanceof Date) ? d : new Date(d);
+  return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}`;
+}
+
+function ymToLabel(ym){
+  const [y,m] = ym.split('-').map(Number);
+  return `${MONTHS_ES[m-1]} ${y}`;
+}
+
+function daysInMonth(y,m){ // m: 1-12
+  return new Date(y, m, 0).getDate();
+}
+
+function clampDay(y,m,day){
+  return Math.min(Math.max(1, day), daysInMonth(y,m));
+}
+
+function makeDate(y,m,day){
+  return new Date(y, m-1, clampDay(y,m,day), 12, 0, 0, 0);
+}
+
+function addMonthsToYM(ym, add){
+  const [y0,m0] = ym.split('-').map(Number);
+  let y=y0, m=m0+add;
+  while (m>12){ m-=12; y++; }
+  while (m<1){ m+=12; y--; }
+  return `${y}-${pad2(m)}`;
+}
+
+function sameYM(date, ym){
+  return toYM(date) === ym;
+}
+
+// Key local para cierres por mes
+function cyclesStorageKey(){
+  const email = APP_STATE?.user?.email || 'anon';
+  return `financeapp_card_cycles_v2_${email}`;
+}
+
+function getCycleOverrides(){
+  try{
+    const raw = localStorage.getItem(cyclesStorageKey());
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : {};
+  }catch(e){
+    return {};
+  }
+}
+
+function saveCycleOverrides(obj){
+  try{
+    localStorage.setItem(cyclesStorageKey(), JSON.stringify(obj || {}));
+  }catch(e){}
+}
+
+// Devuelve {closeDate: Date, dueDate: Date} para una tarjeta y un ym (mes de cierre)
+function getCloseInfoForMonth(card, ym){
+  const overrides = getCycleOverrides();
+  const cardId = String(card?.id ?? card?.tarjeta_id ?? card?.ID ?? '');
+  const monthOverride = overrides?.[cardId]?.[ym];
+  if (monthOverride && monthOverride.close && monthOverride.due){
+    return { closeDate: new Date(monthOverride.close), dueDate: new Date(monthOverride.due) };
+  }
+
+  // default: cierre en ese mes, vencimiento al mes siguiente
+  const [y,m] = ym.split('-').map(Number);
+  const diaCierre = parseInt(card?.dia_cierre ?? card?.cierre_dia ?? 1, 10) || 1;
+  const diaVenc = parseInt(card?.dia_vencimiento ?? card?.dia_vencimiento ?? card?.vencimiento_dia ?? 1, 10) || 1;
+
+  const closeDate = makeDate(y, m, diaCierre);
+  const dueYM = addMonthsToYM(ym, 1);
+  const [y2,m2] = dueYM.split('-').map(Number);
+  const dueDate = makeDate(y2, m2, diaVenc);
+  return { closeDate, dueDate };
+}
+
+// Para una compra (fecha) devuelve el mes de cierre que le corresponde
+function getStatementCloseYM(purchaseDate, card){
+  const d = (purchaseDate instanceof Date) ? purchaseDate : new Date(purchaseDate);
+  const ym = toYM(d);
+  const infoThis = getCloseInfoForMonth(card, ym);
+  // si compra luego del cierre, cae al próximo cierre
+  if (d.getTime() > infoThis.closeDate.getTime()){
+    return addMonthsToYM(ym, 1);
+  }
+  return ym;
+}
+
+// Expande una compra en cuotas a pagos mensuales según cierres/vencimientos
+function buildInstallmentSchedule({purchaseDate, card, cuotasTotales, montoTotal, descripcion, baseItem, miParte, parejaParte}){
+  const schedule = [];
+  const totalCuotas = Math.max(1, parseInt(cuotasTotales, 10) || 1);
+  const total = parseAmount(montoTotal);
+  const cuotaMonto = (totalCuotas > 0) ? (total / totalCuotas) : total;
+  const firstCloseYM = getStatementCloseYM(purchaseDate, card);
+
+  for (let i=0;i<totalCuotas;i++){
+    const cuotaN = i+1;
+    const closeYM = addMonthsToYM(firstCloseYM, i);
+    const {closeDate, dueDate} = getCloseInfoForMonth(card, closeYM);
+    const pendiente = Math.max(0, total - cuotaMonto*cuotaN);
+
+    schedule.push({
+      ...baseItem,
+      descripcion,
+      tipo: 'credit',
+      fecha: dueDate.toISOString(),
+      dueDate,
+      closeDate,
+      closeYM,
+      cardId: String(card?.id ?? ''),
+      banco: card?.banco || '',
+      total: cuotaMonto,
+      mi_parte: miParte != null ? (parseAmount(miParte) / totalCuotas) : cuotaMonto,
+      pareja: parejaParte != null ? (parseAmount(parejaParte) / totalCuotas) : 0,
+      cuotaN,
+      cuotasTotales: totalCuotas,
+      pendiente,
+      observaciones_extra: `Cuota ${cuotaN}/${totalCuotas} • Pendiente: ${fmtMoney(pendiente)}`
+    });
+  }
+  return schedule;
+}
+
+// Helper para iniciales
+function initials(nameOrEmail = '') {
+  const s = String(nameOrEmail).trim();
+  if (!s) return 'U';
+  if (s.includes('@')) return s.split('@')[0].slice(0, 2).toUpperCase();
+  const parts = s.split(/\s+/).filter(Boolean);
+  return ((parts[0] || 'U')[0] + (parts[1] || parts[0] || 'U')[0]).toUpperCase();
+}
+
+// Helper para escapar HTML
+function escapeHtml(s = '') {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// Helper: email de la pareja vinculada (si existe)
+function getPartnerEmail() {
+  // 1) Prefer explicit selection in the expense modal (if present)
+  const sel = document.getElementById('sharedWithSelect');
+  const other = document.getElementById('sharedWithOtherEmail');
+  if (sel) {
+    const v = String(sel.value || '').trim();
+    if (v === '__other__') {
+      const oe = other ? String(other.value || '').trim() : '';
+      if (oe) return oe.toLowerCase();
+    } else if (v) {
+      return v.toLowerCase();
+    }
+  }
+
+  // 2) Fallback to linked partner in state
+  const email = (
+    (APP_STATE && APP_STATE.partner && APP_STATE.partner.email) ||
+    (APP_STATE && APP_STATE.pareja && (APP_STATE.pareja.email || APP_STATE.pareja.email_pareja)) ||
+    (APP_STATE && APP_STATE.data && APP_STATE.data.pareja && (APP_STATE.data.pareja.email || APP_STATE.data.pareja.email_pareja))
+  );
+  return email ? String(email).trim().toLowerCase() : '';
+}
+
+
+function refreshSharedWithOptions_() {
+  const sel = document.getElementById('sharedWithSelect');
+  const other = document.getElementById('sharedWithOtherEmail');
+  if (!sel) return;
+
+  const current = String(sel.value || '').trim();
+
+  // Reset options
+  sel.innerHTML = '';
+  const opt0 = document.createElement('option');
+  opt0.value = '';
+  opt0.textContent = 'Seleccionar...';
+  sel.appendChild(opt0);
+
+  const partner = getPartnerEmail();
+  if (partner) {
+    const optP = document.createElement('option');
+    optP.value = partner;
+    optP.textContent = partner;
+    sel.appendChild(optP);
+  }
+
+  const optOther = document.createElement('option');
+  optOther.value = '__other__';
+  optOther.textContent = 'Otro email...';
+  sel.appendChild(optOther);
+
+  // Restore selection
+  if (current) sel.value = current;
+
+  // Show/hide other input
+  if (other) {
+    const isOther = sel.value === '__other__';
+    other.classList.toggle('hidden', !isOther);
+  }
+
+  sel.onchange = () => {
+    if (!other) return;
+    const isOther = sel.value === '__other__';
+    other.classList.toggle('hidden', !isOther);
+    if (isOther) other.focus();
+  };
+}
+
+// Helper para setear texto
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+// Helper para fecha formateada
+function formatDate(dateStr) {
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return dateStr;
+  return date.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// =========================================================
+// SERVICIO API REAL
+// =========================================================
+
+const APIService = {
+  async callAPI(action, params = {}) {
+    const url = new URL(CONFIG.API_URL);
+    const allParams = {
+      action: action,
+      callback: 'callback',
+      ...params,
+      timestamp: Date.now()
+    };
+    
+    const skipUserEmail = (params && (params.__skipUserEmail === true || params.__skipUserEmail === 'true'));
+    if (skipUserEmail) {
+      // Remove internal flag so it doesn't go to the backend
+      delete allParams.__skipUserEmail;
+    }
+
+    if (APP_STATE.user?.email && action !== 'register' && action !== 'login' && !skipUserEmail) {
+      // allow explicit override (e.g., accepting invitation on behalf of invited email)
+      if (!('userEmail' in params) || !params.userEmail) {
+        allParams.userEmail = APP_STATE.user.email;
+      }
+    }
+    
+    Object.entries(allParams).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        url.searchParams.append(key, value);
+      }
+    });
+    
+    console.log('🌐 API Call:', action, params);
+    
+    try {
+      const response = await fetch(url);
+      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      const responseText = await response.text();
+      
+      if (responseText.includes('callback(')) {
+        try {
+          const jsonStr = responseText.substring(
+            responseText.indexOf('(') + 1, 
+            responseText.lastIndexOf(')')
+          );
+          const result = JSON.parse(jsonStr);
+          
+          if (!result.success && result.message && action !== 'login' && action !== 'register') {
+            showAlert(result.message, 'warning');
+          }
+          
+          return result;
+        } catch (parseError) {
+          console.error('❌ JSON Parse Error:', parseError);
+          throw new Error('Invalid JSON response from API');
+        }
+      } else {
+        try {
+          return JSON.parse(responseText);
+        } catch (jsonError) {
+          console.error('❌ Direct JSON parse failed:', jsonError);
+          throw new Error('API returned invalid format');
+        }
+      }
+    } catch (error) {
+      console.error('❌ Fetch Error:', error);
+      
+      if (CONFIG.USE_FALLBACK) {
+        return getFallbackData(action, params);
+      }
+      
+      showAlert('Error de conexión con el servidor', 'warning');
+      
+      return {
+        success: false,
+        message: 'Connection error',
+        datos: []
+      };
+    }
+  },
+  
+  // 🔐 Autenticación
+  async register(email, password, name, currency = 'ARS') {
+    return this.callAPI('register', { email, password, name, currency });
+  },
+  
+  async login(email, password) {
+    return this.callAPI('login', { email, password });
+  },
+  
+  // 📊 Datos
+  async leer(tabla, filters = {}) {
+    const result = await this.callAPI('leer', { tabla, ...filters });
+    return result.success ? (result.datos || []) : [];
+  },
+  
+  async crear(tabla, data) {
+    return this.callAPI('crear', { tabla, ...data });
+  },
+  
+  async actualizar(tabla, id, data) {
+    return this.callAPI('actualizar', { tabla, id, ...data });
+  },
+  
+  async eliminar(tabla, id) {
+    return this.callAPI('eliminar', { tabla, id });
+  },
+  
+  // 👥 Parejas
+  async getPareja() {
+    return this.callAPI('get_pareja');
+  },
+  
+  async crearInvitacion(payload) {
+    return this.crear('invitacion', payload);
+  },
+  
+  async aceptarInvitacion(invitationId) {
+    return this.callAPI('aceptar_invitacion', { invitationId });
+  },
+  
+  // 🔔 Notificaciones
+  async leerNotificaciones() {
+    const result = await this.leer('notificaciones', { unread: 'true' });
+    return result || [];
+  },
+  
+  async marcarTodasLeidas() {
+    return this.callAPI('marcar_todas_leidas');
+  },
+  
+  // ⚙️ Configuración
+  async actualizarPerfil(data) {
+    const user = APP_STATE.user;
+    if (!user || !user.id) throw new Error('Usuario no autenticado');
+    return this.actualizar('usuarios', user.id, data);
+  },
+  
+  async cambiarPassword(currentPassword, newPassword) {
+    return this.callAPI('cambiar_password', { currentPassword, newPassword });
+  }
+};
+
+// =========================================================
+// ESTADO GLOBAL
+// =========================================================
+
 const APP_STATE = {
-  user: null,          // {email,name,picture?,currency?,darkMode?}
-  partner: null,       // {email,name?}
+  user: null,
+  isDemo: false,
+  _registering: false,
+  partner: null,
   currentSection: 'dashboard',
   data: {
     categorias: [],
     ingresos: [],
     gastos: [],
     tarjetas: [],
-    shared_requests: [],
     gastos_compartidos: [],
     notificaciones: []
   },
-  charts: { expenses: null, trend: null },
-  timers: { poll: null }
+  charts: { expenses: null, trend: null, category: null },
+  filters: {
+    incomes: { month: '', year: '' },
+    expenses: { month: '', year: '', category: 'all', tipo: 'all' },
+    shared: { month: '', year: '', tipo: 'all' },
+    projections: { month: '', year: '', tipo: 'all' }
+  }
 };
 
-// ===============================
-// Helpers
-// ===============================
-const $ = (sel, root=document) => root.querySelector(sel);
-const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
-const fmtMoney = (v) => {
-  const cur = (APP_STATE.user?.currency || CONFIG.DEFAULT_CURRENCY || 'ARS').toUpperCase();
-  const n = Number(v || 0);
+// =========================================================
+// FUNCIONES DE AUTENTICACIÓN
+// =========================================================
+
+function showLoading(show) {
+  const loading = $('#loadingOverlay');
+  if (loading) loading.classList.toggle('hidden', !show);
+}
+
+async function handleQuickLogin() {
+  const email = $('#quickEmail')?.value?.trim();
+  const password = $('#quickPassword')?.value?.trim();
+  
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showAlert('Ingresá un email válido', 'warning');
+    return;
+  }
+  
+  if (!password) {
+    showAlert('Ingresá tu contraseña', 'warning');
+    return;
+  }
+  
+  showLoading(true);
+  
   try {
-    return new Intl.NumberFormat('es-AR', { style:'currency', currency: cur, maximumFractionDigits: 2 }).format(n);
-  } catch {
-    return `$${n.toFixed(2)}`;
-  }
-};
-const safeNum = (x) => {
-  const n = parseFloat(x);
-  return Number.isFinite(n) ? n : 0;
-};
-const uid = (p='id') => `${p}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-const todayISO = () => {
-  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().slice(0,10);
-};
-function initials(nameOrEmail='') {
-  const s = String(nameOrEmail).trim();
-  if (!s) return 'U';
-  if (s.includes('@')) return s.split('@')[0].slice(0,2).toUpperCase();
-  const parts = s.split(/\s+/).filter(Boolean);
-  const a = (parts[0]||'U')[0]||'U';
-  const b = (parts[1]||parts[0]||'U')[0]||'U';
-  return (a+b).toUpperCase();
-}
-function parseDateAny(v) {
-  if (!v) return null;
-  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
-  const s = String(v).trim();
-  // ISO
-  const d0 = new Date(s);
-  if (!isNaN(d0.getTime())) return d0;
-  // dd/mm/yyyy
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) {
-    const dd = parseInt(m[1],10);
-    const mm = parseInt(m[2],10)-1;
-    const yy = parseInt(m[3],10);
-    const d = new Date(yy,mm,dd);
-    return isNaN(d.getTime()) ? null : d;
-  }
-  return null;
-}
-function sameMonth(d, y, m) {
-  const dt = parseDateAny(d); if (!dt) return false;
-  return dt.getFullYear()===y && (dt.getMonth()+1)===m;
-}
-function monthLabel(y,m){
-  const months = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-  return `${months[m-1]} ${y}`;
-}
-function showAlert(msg, type='info', timeout=3500) {
-  const c = $('#alertsContainer');
-  if (!c) return;
-  const id = uid('al');
-  const cls = type === 'danger' ? 'alert alert-danger' :
-              type === 'success' ? 'alert alert-success' :
-              type === 'warning' ? 'alert alert-warning' : 'alert alert-info';
-  const html = `
-    <div id="${id}" class="${cls}" style="margin-bottom:12px;">
-      <i class="fas fa-circle-info"></i>
-      <div>${msg}</div>
-    </div>`;
-  c.insertAdjacentHTML('afterbegin', html);
-  if (timeout) setTimeout(()=>{ const el=$('#'+id); el?.remove(); }, timeout);
-}
-function showModal(id) {
-  const m = document.getElementById(id);
-  if (m) m.classList.add('active');
-}
-function closeAllModals() {
-  $$('.modal-overlay').forEach(m => m.classList.remove('active'));
-}
-function setText(id, text) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = text;
-}
-
-// ===============================
-// JSONP (para Apps Script sin CORS)
-// ===============================
-function b64EncodeUnicode(str) {
-  return btoa(unescape(encodeURIComponent(str)));
-}
-function b64DecodeUnicode(str) {
-  try { return decodeURIComponent(escape(atob(str))); } catch { return ''; }
-}
-function jsonpRequest(url, timeoutMs=15000) {
-  return new Promise((resolve, reject) => {
-    const cb = `__cb_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const script = document.createElement('script');
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error('Timeout JSONP')); }, timeoutMs);
-
-    function cleanup() {
-      clearTimeout(timer);
-      try { delete window[cb]; } catch { window[cb]=undefined; }
-      script.remove();
+    const result = await APIService.login(email, password);
+    
+    if (result.success && result.user) {
+      completeLogin(result.user);
+    } else {
+      showAlert(result.message || 'Email o contraseña incorrectos', 'danger');
     }
-
-    window[cb] = (data) => { cleanup(); resolve(data); };
-    const sep = url.includes('?') ? '&' : '?';
-    script.src = `${url}${sep}callback=${encodeURIComponent(cb)}`;
-    script.onerror = () => { cleanup(); reject(new Error('Error JSONP')); };
-    document.body.appendChild(script);
-  });
+  } catch (err) {
+    console.error('Error en login:', err);
+    showAlert('Error de conexión con el servidor', 'danger');
+  } finally {
+    showLoading(false);
+  }
 }
 
-// ===============================
-// API Service
-// - Espera backend con:
-//   ?action=leer&tabla=ingresos&userEmail=...
-//   ?action=guardar&tabla=gastos&userEmail=...&payload=BASE64(JSON)
-//   + actions especiales sin tabla (tabla="")
-// ===============================
-const APIService = {
-  async call(action, tabla='', payloadObj=null) {
-    if (!CONFIG.API_URL || CONFIG.API_URL.includes('PEGAR_AQUI')) {
-      throw new Error('CONFIG.API_URL no configurado');
+async function handleRegister(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  if (APP_STATE._registering) return;
+  APP_STATE._registering = true;
+
+  const name = $('#registerName')?.value?.trim();
+  const email = $('#registerEmail')?.value?.trim();
+  const password = $('#registerPassword')?.value?.trim();
+  const confirmPassword = $('#registerConfirmPassword')?.value?.trim();
+
+  if (!name || !email || !password || !confirmPassword) {
+    showAlert('Completá todos los campos', 'warning');
+    APP_STATE._registering = false;
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    showAlert('Las contraseñas no coinciden', 'warning');
+    APP_STATE._registering = false;
+    return;
+  }
+
+  if (password.length < 6) {
+    showAlert('La contraseña debe tener al menos 6 caracteres', 'warning');
+    APP_STATE._registering = false;
+    return;
+  }
+
+  showLoading(true);
+
+  try {
+    const result = await APIService.register(email, password, name);
+
+    if (result.success) {
+      showAlert('¡Cuenta creada exitosamente! Ahora podés iniciar sesión.', 'success');
+      
+      $('#registerSection')?.classList.add('hidden');
+      $('#registerName').value = '';
+      $('#registerEmail').value = '';
+      $('#registerPassword').value = '';
+      $('#registerConfirmPassword').value = '';
+      $('#quickEmail').value = email;
+      $('#quickPassword').focus();
+    } else {
+      showAlert(result.message || 'Error creando cuenta', 'danger');
     }
-    const params = new URLSearchParams();
-    params.set('action', action);
-    params.set('tabla', tabla || '');
-    params.set('userEmail', APP_STATE.user?.email || '');
-    if (payloadObj) params.set('payload', b64EncodeUnicode(JSON.stringify(payloadObj)));
-    const url = `${CONFIG.API_URL}?${params.toString()}`;
-    const res = await jsonpRequest(url);
-    if (!res || res.success === false) throw new Error(res?.message || 'Error API');
-    return res;
-  },
-  async ping() {
-    try { return await this.call('ping'); }
-    catch { return { success:true, message:'skip' }; }
-  },
-  async leer(tabla) {
-    const r = await this.call('leer', tabla);
-    return r.datos || [];
-  },
-  async guardar(tabla, fila) {
-    return await this.call('guardar', tabla, { fila });
-  },
-  async actualizar(tabla, fila) {
-    return await this.call('actualizar', tabla, { fila });
-  },
-  async eliminar(tabla, id) {
-    return await this.call('eliminar', tabla, { id });
-  },
-
-  // Pareja
-  async crearInvitacion(toEmail) {
-    return await this.call('crear_invitacion', '', { toEmail });
-  },
-  async aceptarInvitacion(code) {
-    return await this.call('aceptar_invitacion', '', { code });
-  },
-  async leerPareja() {
-    const r = await this.call('leer_pareja', '', {});
-    return r.partner || null;
-  },
-
-  // Shared (solicitud)
-  async crearSolicitudCompartido(req) {
-    return await this.call('crear_solicitud_compartido', '', req);
-  },
-  async responderSolicitudCompartido(requestId, decision) {
-    return await this.call('responder_solicitud_compartido', '', { requestId, decision });
-  },
-
-  // Notificaciones
-  async leerNotificaciones() {
-    const r = await this.call('leer_notificaciones', '', {});
-    return r.datos || [];
-  },
-  async marcarNotificacionLeida(id) {
-    return await this.call('marcar_notificacion_leida', '', { id });
-  }
-};
-
-// ===============================
-// Local fallback (solo pruebas)
-// ===============================
-const LocalStore = {
-  key(tabla){ return `financeapp_${APP_STATE.user?.email||'anon'}_${tabla}`; },
-  get(tabla){
-    try { return JSON.parse(localStorage.getItem(this.key(tabla))||'[]'); } catch { return []; }
-  },
-  set(tabla, arr){
-    localStorage.setItem(this.key(tabla), JSON.stringify(arr||[]));
-  }
-};
-
-async function apiReadOrLocal(tabla) {
-  try { return await APIService.leer(tabla); }
-  catch (e) {
-    if (!CONFIG.SAVE_LOCAL_FALLBACK) throw e;
-    return LocalStore.get(tabla);
-  }
-}
-async function apiSaveOrLocal(tabla, fila) {
-  try { return await APIService.guardar(tabla, fila); }
-  catch (e) {
-    if (!CONFIG.SAVE_LOCAL_FALLBACK) throw e;
-    const arr = LocalStore.get(tabla);
-    arr.push(fila);
-    LocalStore.set(tabla, arr);
-    return { success:true, id:fila.id };
-  }
-}
-async function apiUpdateOrLocal(tabla, fila) {
-  try { return await APIService.actualizar(tabla, fila); }
-  catch (e) {
-    if (!CONFIG.SAVE_LOCAL_FALLBACK) throw e;
-    const arr = LocalStore.get(tabla);
-    const idx = arr.findIndex(x=>x.id===fila.id);
-    if (idx>=0) arr[idx]=fila;
-    LocalStore.set(tabla, arr);
-    return { success:true };
-  }
-}
-async function apiDeleteOrLocal(tabla, id) {
-  try { return await APIService.eliminar(tabla, id); }
-  catch (e) {
-    if (!CONFIG.SAVE_LOCAL_FALLBACK) throw e;
-    const arr = LocalStore.get(tabla).filter(x=>x.id!==id);
-    LocalStore.set(tabla, arr);
-    return { success:true };
+  } catch (err) {
+    console.error('❌ Error en registro:', err);
+    showAlert('Error de conexión con el servidor', 'danger');
+  } finally {
+    showLoading(false);
+    APP_STATE._registering = false;
   }
 }
 
-// ===============================
-// Boot
-// ===============================
-document.addEventListener('DOMContentLoaded', () => {
-  wireUI();
-  restoreUser();
+function completeLogin(userData, options = {}) {
+  const { persist = true, isDemo = false } = options;
 
-  if (APP_STATE.user) {
-    showMainApp();
-  } else {
-    showLogin();
+  APP_STATE.isDemo = !!isDemo;
+
+  const email = (userData.email || '').toLowerCase().trim();
+  const name = userData.nombre || userData.name || (email ? email.split('@')[0] : 'Usuario');
+
+  APP_STATE.user = {
+    id: userData.id || ('usr_' + Math.random().toString(36).slice(2)),
+    email,
+    name,
+    currency: userData.moneda || userData.currency || CONFIG.DEFAULT_CURRENCY,
+    foto_url: userData.foto_url || '',
+    isDemo: APP_STATE.isDemo
+  };
+
+  if (persist) {
+    localStorage.setItem('financeapp_user', JSON.stringify(APP_STATE.user));
   }
-});
 
-function wireUI() {
-  // login
-  $('#googleLoginBtn')?.addEventListener('click', loginFallback);
-  $('#emailLoginBtn')?.addEventListener('click', handleEmailLogin);
+  showMainApp();
+  showSection('dashboard');
+  showAlert(`¡Bienvenido ${APP_STATE.user.name}!`, 'success');
+}
 
+function loginTest() {
+  CONFIG.USE_FALLBACK = true;
+  completeLogin({ 
+    id: 'usr_demo',
+    email: 'demo@ejemplo.com',
+    nombre: 'Usuario Demo',
+    moneda: 'ARS'
+  }, { persist: false, isDemo: true });
 
-  // nav
-  $$('.nav-item[data-section]').forEach(a => {
-    a.addEventListener('click', (e)=>{
-      e.preventDefault();
-      showSection(a.dataset.section);
+  showAlert('Modo demo activado (datos locales). Para usar tus datos reales, cerrá sesión e iniciá con tu cuenta.', 'warning');
+}
+
+// ===============================
+// Invitación desde Login (sin modo prueba)
+// ===============================
+function toggleInviteActivation_() {
+  const box = document.getElementById('inviteActivationSection');
+  if (!box) return;
+  box.classList.toggle('hidden');
+}
+
+async function activateInviteFromLogin_() {
+  const email = (document.getElementById('inviteEmail')?.value || '').trim().toLowerCase();
+  const code = (document.getElementById('inviteCode')?.value || '').trim().toUpperCase();
+  const password = (document.getElementById('invitePassword')?.value || '').trim();
+
+  if (!email || !code || !password) {
+    showToast('Completá email, código y contraseña.', 'warning');
+    return;
+  }
+
+  try {
+    // 1) Buscar invitación pendiente para ese email
+    const invRes = await APIService.callAPI('leer', {
+      tabla: 'invitaciones',
+      email_to: email,
+      estado: 'pendiente',
+      __skipUserEmail: true
     });
-  });
 
-  // sidebar toggle
-  $('#menuToggle')?.addEventListener('click', ()=> $('#sidebar')?.classList.toggle('active'));
+    const invs = invRes && invRes.success ? (invRes.datos || []) : [];
+    const inv = invs.find(i => String(i.codigo || '').toUpperCase() === code) || invs.find(i => String(i.id || '') === code);
+    if (!inv) {
+      showToast('No encontré una invitación pendiente con ese código para ese email.', 'error');
+      return;
+    }
 
-  // logout
-  $('#logoutBtn')?.addEventListener('click', logout);
+    // 2) Aceptar invitación (esto vincula pareja en backend)
+    const acc = await APIService.callAPI('aceptar_invitacion', { invitationId: inv.id, userEmail: email, __skipUserEmail: true });
+    if (!acc || !acc.success) {
+      showToast(acc?.message || 'No se pudo aceptar la invitación.', 'error');
+      return;
+    }
 
-  // modales close
-  $$('.modal-close').forEach(b=> b.addEventListener('click', closeAllModals));
+    // 3) Crear/actualizar password del usuario invitado
+    const setPass = await APIService.callAPI('set_password', { email, password, __skipUserEmail: true });
+    if (!setPass || !setPass.success) {
+      showToast(setPass?.message || 'No se pudo configurar la contraseña.', 'error');
+      return;
+    }
 
-  // abrir modales
-  $('#addIncomeBtn')?.addEventListener('click', ()=> openIncomeModal());
-  $('#addExpenseBtn')?.addEventListener('click', ()=> openExpenseModal(false));
-  $('#addSharedExpenseBtn')?.addEventListener('click', ()=> openExpenseModal(true));
-  $('#addCardBtn')?.addEventListener('click', ()=> showModal('cardModal'));
+    // 4) Login automático
+    const login = await APIService.callAPI('login', { email, password, __skipUserEmail: true });
+    if (!login || !login.success) {
+      showToast(login?.message || 'No se pudo iniciar sesión.', 'error');
+      return;
+    }
 
-  // guardar
-  $('#saveIncomeBtn')?.addEventListener('click', saveIncome);
-  $('#saveExpenseBtn')?.addEventListener('click', saveExpense);
-  $('#saveCardBtn')?.addEventListener('click', saveCard);
+    APP_STATE.user = login.user;
+    localStorage.setItem('financeapp_user', JSON.stringify(APP_STATE.user));
+    showToast('✅ Invitación activada. ¡Bienvenido!', 'success');
 
-  // pareja
-  $('#invitePartnerBtn')?.addEventListener('click', ()=> showModal('inviteModal'));
-  $('#acceptInviteBtn')?.addEventListener('click', ()=> showModal('acceptInviteModal'));
-  $('#sendInviteBtn')?.addEventListener('click', sendInvite);
-  $('#acceptInviteConfirmBtn')?.addEventListener('click', acceptInvite);
+    // Ocultar login y cargar app
+    document.getElementById('loginSection')?.classList.add('hidden');
+    document.getElementById('appSection')?.classList.remove('hidden');
 
-  // notificaciones modal
-  $('#notifBtn')?.addEventListener('click', ()=> { renderNotifications(); showModal('notificationsModal'); });
-  $('#notifList')?.addEventListener('click', onNotifListClick);
-
-  // filtros charts
-  $('#expensePeriod')?.addEventListener('change', ()=>{ updateDashboard(); });
-  $('#trendPeriod')?.addEventListener('change', ()=>{ updateDashboard(); });
-
-  // filtros ingresos/gastos
-  $('#applyIncomePeriodBtn')?.addEventListener('click', loadIncomes);
-  $('#clearIncomePeriodBtn')?.addEventListener('click', ()=>{ $('#incomeMonthSelect').value=''; $('#incomeYearSelect').value=''; loadIncomes(); });
-  $('#applyExpensePeriodBtn')?.addEventListener('click', loadExpenses);
-  $('#clearExpensePeriodBtn')?.addEventListener('click', ()=>{ $('#expenseMonthSelect').value=''; $('#expenseYearSelect').value=''; loadExpenses(); });
-  $('#expenseFilter')?.addEventListener('change', loadExpenses);
-
-  // tabs gastos
-  $('#expenseTabs')?.addEventListener('click', (e)=>{
-    const btn = e.target.closest('.tab'); if (!btn) return;
-    $$('#expenseTabs .tab').forEach(x=>x.classList.remove('active'));
-    btn.classList.add('active');
-    loadExpenses();
-  });
-
-  // delegación editar/eliminar
-  $('#incomesList')?.addEventListener('click', onIncomeListClick);
-  $('#expensesList')?.addEventListener('click', onExpenseListClick);
-
-  // toggles shared/credit en gasto
-  $('#isSharedCheck')?.addEventListener('change', (e)=> $('#sharedFields')?.classList.toggle('hidden', !e.target.checked));
-  $('#sharedPercentageSelect')?.addEventListener('change', (e)=> $('#customPercentageField')?.classList.toggle('hidden', e.target.value !== 'custom'));
-  $('#expenseForm select[name="tipo"]')?.addEventListener('change', (e)=> $('#creditCardFields')?.classList.toggle('hidden', e.target.value !== 'credit'));
+    await loadAll();
+    showSection('dashboard');
+  } catch (err) {
+    console.error('Error activando invitación desde login:', err);
+    showToast('Error activando invitación. Revisá consola.', 'error');
+  }
 }
+
 
 function showLogin() {
   $('#loginScreen')?.classList.remove('hidden');
   $('#mainApp')?.classList.add('hidden');
 }
+
 function showMainApp() {
   $('#loginScreen')?.classList.add('hidden');
   $('#mainApp')?.classList.remove('hidden');
   updateUserUI();
   initYearSelects();
-  loadAll().catch(err=>{
-    console.error(err);
-    showAlert('Error inicial. Revisá CONFIG.API_URL y tu Apps Script.', 'danger', 6000);
-  });
-
-  // polling
-  if (APP_STATE.timers.poll) clearInterval(APP_STATE.timers.poll);
-  APP_STATE.timers.poll = setInterval(async ()=>{
-    try { await refreshPartnerAndShared(); } catch {}
-    try { await refreshNotifications(); } catch {}
-  }, CONFIG.NOTIF_POLL_MS);
-}
-
-function restoreUser() {
-  try {
-    const raw = localStorage.getItem('financeapp_user');
-    if (raw) APP_STATE.user = JSON.parse(raw);
-  } catch {}
-}
-
-function loginFallback(e){
-  e?.preventDefault?.();
-  // Prefer el formulario de email (sin Google) para que funcione incluso en file://
-  document.getElementById('loginEmail')?.focus();
-  // Si no existe el formulario, usa prompt como último recurso.
-  if (!document.getElementById('loginEmail')) {
-    const email = prompt('Ingresá tu email para continuar');
-    if (!email) return;
-    const name = email.split('@')[0] || 'Usuario';
-    completeLogin({ email, name, picture: null });
-  }
-}
-
-function handleEmailLogin(e){
-  e?.preventDefault?.();
-  const name = (document.getElementById('loginName')?.value || '').trim() || 'Usuario';
-  const email = (document.getElementById('loginEmail')?.value || '').trim();
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    toast('Ingresá un email válido', 'warning');
-    document.getElementById('loginEmail')?.focus();
-    return;
-  }
-  completeLogin({ email, name, picture: null });
-}
-
-function logout() {
-  if (!confirm('¿Cerrar sesión?')) return;
-  localStorage.removeItem('financeapp_user');
-  APP_STATE.user = null;
-  APP_STATE.partner = null;
-  APP_STATE.data = { categorias:[], ingresos:[], gastos:[], tarjetas:[], shared_requests:[], gastos_compartidos:[], notificaciones:[] };
-  if (APP_STATE.timers.poll) clearInterval(APP_STATE.timers.poll);
-  showLogin();
+  loadAll();
 }
 
 function updateUserUI() {
@@ -432,1159 +867,3072 @@ function updateUserUI() {
   setText('userEmail', APP_STATE.user?.email || '');
   setText('userInitials', initials(APP_STATE.user?.name || APP_STATE.user?.email));
   setText('currencyDisplay', (APP_STATE.user?.currency || CONFIG.DEFAULT_CURRENCY).toUpperCase());
+  
+  const currencySelect = $('#profileCurrency');
+  if (currencySelect) currencySelect.value = APP_STATE.user?.currency || CONFIG.DEFAULT_CURRENCY;
 }
 
-// ===============================
-// Navegación
-// ===============================
+function logout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+  localStorage.removeItem('financeapp_user');
+  APP_STATE.user = null;
+  APP_STATE.partner = null;
+  showLogin();
+  showAlert('Sesión cerrada exitosamente', 'info');
+}
+
+function restoreUser() {
+  try {
+    const raw = localStorage.getItem('financeapp_user');
+    if (!raw) return false;
+
+    const userData = JSON.parse(raw);
+    if (!userData || !userData.email) return false;
+
+    const email = String(userData.email).toLowerCase().trim();
+    if (email === 'demo@ejemplo.com' || userData.isDemo === true) {
+      localStorage.removeItem('financeapp_user');
+      return false;
+    }
+
+    APP_STATE.user = {
+      id: userData.id,
+      email,
+      name: userData.name || email.split('@')[0],
+      currency: userData.currency || CONFIG.DEFAULT_CURRENCY,
+      foto_url: userData.foto_url || '',
+      isDemo: false
+    };
+    APP_STATE.isDemo = false;
+
+    console.log('👤 Usuario restaurado:', APP_STATE.user.email);
+    return true;
+  } catch (err) {
+    console.warn('Error restaurando usuario:', err);
+    localStorage.removeItem('financeapp_user');
+    return false;
+  }
+}
+
+// =========================================================
+// INICIALIZACIÓN Y NAVEGACIÓN
+// =========================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+  wireUI();
+  
+  if (restoreUser()) {
+    showMainApp();
+  } else {
+    showLogin();
+  }
+});
+
+function wireUI() {
+  console.log('🔧 Inicializando UI...');
+  
+  // Login/Register
+  $('#quickLoginBtn')?.addEventListener('click', handleQuickLogin);
+  $('#testLoginBtn')?.addEventListener('click', toggleInviteActivation_);
+    $('#activateInviteBtn')?.addEventListener('click', activateInviteFromLogin_);
+$('#registerLink')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    $('#registerSection')?.classList.remove('hidden');
+    $('#registerName')?.focus();
+  });
+  $('#loginLink')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    $('#registerSection')?.classList.add('hidden');
+  });
+  $('#registerBtn')?.addEventListener('click', handleRegister);
+  
+  // Navegación
+  $$('.nav-item[data-section]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const section = a.dataset.section;
+      showSection(section);
+    });
+  });
+  
+  // Logout
+  $('#logoutBtn')?.addEventListener('click', logout);
+  
+  // Menú toggle
+  $('#menuToggle')?.addEventListener('click', () => {
+    $('#sidebar')?.classList.toggle('active');
+  });
+  
+  // Tema toggle
+  $('#themeToggle')?.addEventListener('click', toggleTheme);
+  
+  // Botones principales
+  $('#addIncomeBtn')?.addEventListener('click', () => openIncomeModal());
+  $('#addExpenseBtn')?.addEventListener('click', () => openExpenseModal());
+  $('#addCardBtn')?.addEventListener('click', () => openCardModal());
+
+  $('#openCyclesBtn')?.addEventListener('click', () => openCyclesModal());
+  $('#addSharedExpenseBtn')?.addEventListener('click', () => openSharedExpenseModal());
+  
+  // Botones de pareja
+  $('#invitePartnerBtn')?.addEventListener('click', () => openInviteModal());
+  $('#acceptInviteBtn')?.addEventListener('click', () => openAcceptInviteModal());
+  $('#settleDebtsBtn')?.addEventListener('click', () => showAlert('Función en desarrollo', 'info'));
+  
+  // Configuración
+  $('#saveProfileBtn')?.addEventListener('click', saveProfile);
+  $('#addCategoryBtn')?.addEventListener('click', () => showAlert('Función en desarrollo', 'info'));
+  $('#changePasswordBtn')?.addEventListener('click', changePassword);
+  $('#exportDataBtn')?.addEventListener('click', exportData);
+  $('#clearDataBtn')?.addEventListener('click', clearData);
+  $('#exportReportBtn')?.addEventListener('click', () => showAlert('Exportación en desarrollo', 'info'));
+  
+  // Notificaciones
+  $('#notificationBell')?.addEventListener('click', toggleNotifications);
+  $('#markAllReadBtn')?.addEventListener('click', markAllNotificationsAsRead);
+  
+  // Enter en formularios
+  $('#quickPassword')?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleQuickLogin();
+  });
+  
+  $('#registerPassword')?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleRegister(e);
+  });
+  
+  // Setup filters
+  setTimeout(() => {
+    setupFilters();
+    setupModals();
+    refreshSharedWithOptions_();
+  }, 100);
+  
+  console.log('✅ UI inicializada correctamente');
+}
+
 function showSection(section) {
   APP_STATE.currentSection = section;
-  // active nav
-  $$('.nav-item[data-section]').forEach(a=> a.classList.toggle('active', a.dataset.section===section));
-
-  const map = {
-    dashboard: 'dashboardSection',
-    incomes: 'incomesSection',
-    expenses: 'expensesSection',
-    shared: 'sharedSection',
-    cards: 'cardsSection',
-    projections: 'projectionsSection',
-    reports: 'reportsSection',
-    settings: 'settingsSection'
-  };
-  Object.values(map).forEach(id => $('#'+id)?.classList.add('hidden'));
-  $('#'+map[section])?.classList.remove('hidden');
-
-  if (section === 'dashboard') updateDashboard();
-  if (section === 'shared') renderShared();
-  if (section === 'cards') renderCards();
-  if (section === 'projections') renderProjections();
-  if (section === 'reports') renderReports();
-  if (section === 'settings') renderSettings();
+  
+  $$('.nav-item[data-section]').forEach(a => {
+    a.classList.toggle('active', a.dataset.section === section);
+  });
+  
+  $$('.dashboard').forEach(el => {
+    el.classList.add('hidden');
+  });
+  
+  const sectionId = section + 'Section';
+  const targetSection = $('#' + sectionId);
+  if (targetSection) {
+    targetSection.classList.remove('hidden');
+  }
+  
+  console.log('📁 Sección activa:', section);
+  
+  switch(section) {
+    case 'dashboard':
+      updateDashboard();
+      break;
+    case 'incomes':
+      loadIncomes();
+      break;
+    case 'expenses':
+      loadExpenses();
+      break;
+    case 'shared':
+      loadSharedSection();
+      break;
+    case 'cards':
+      loadCards();
+      break;
+    case 'projections':
+      loadProjections();
+      break;
+    case 'reports':
+      loadReports();
+      break;
+    case 'settings':
+      loadSettings();
+      break;
+  }
 }
 
-// ===============================
-// Init data
-// ===============================
+function toggleTheme() {
+  const body = document.body;
+  const currentTheme = body.getAttribute('data-theme');
+  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  body.setAttribute('data-theme', newTheme);
+  localStorage.setItem('financeapp_theme', newTheme);
+  
+  const icon = $('#themeToggle i');
+  if (icon) icon.className = newTheme === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
+  
+  showAlert(`Tema ${newTheme === 'dark' ? 'oscuro' : 'claro'} activado`, 'info');
+}
+
+function toggleNotifications() {
+  const panel = $('#notificationsPanel');
+  if (panel) panel.classList.toggle('hidden');
+}
+
+// =========================================================
+// FUNCIONES DE DATOS
+// =========================================================
+
 function initYearSelects() {
   const now = new Date();
-  const y0 = now.getFullYear();
-  const years = [];
-  for (let y = y0 - 5; y <= y0 + 1; y++) years.push(y);
-
-  for (const id of ['incomeYearSelect','expenseYearSelect']) {
-    const sel = document.getElementById(id);
-    if (!sel) continue;
-    sel.innerHTML = '<option value="">Todos</option>' + years.map(y=>`<option value="${y}">${y}</option>`).join('');
-    sel.value = '';
-  }
-  for (const id of ['incomeMonthSelect','expenseMonthSelect']) {
-    const sel = document.getElementById(id);
-    if (!sel) continue;
-    if (!sel.querySelector('option[value=""]')) {
-      const opt = document.createElement('option'); opt.value=''; opt.textContent='Todos';
-      sel.insertBefore(opt, sel.firstChild);
+  const currentYear = now.getFullYear();
+  
+  // Inicializar todos los selects de año
+  $$('.year-select').forEach(select => {
+    if (select) {
+      let html = '<option value="">Todos</option>';
+      for (let y = currentYear - 2; y <= currentYear + 1; y++) {
+        html += `<option value="${y}" ${y === currentYear ? 'selected' : ''}>${y}</option>`;
+      }
+      select.innerHTML = html;
     }
-    sel.value = '';
+  });
+  
+  // Inicializar selects de año para proyecciones
+  const projectionYearFilter = $('#projectionYearFilter');
+  if (projectionYearFilter) {
+    let html = '<option value="">Todos los años</option>';
+    for (let y = currentYear - 1; y <= currentYear + 1; y++) {
+      html += `<option value="${y}" ${y === currentYear ? 'selected' : ''}>${y}</option>`;
+    }
+    projectionYearFilter.innerHTML = html;
+  }
+
+
+  // Inicializar select de mes para proyecciones (por defecto: mes actual)
+  const projectionMonthFilter = $('#projectionMonthFilter');
+  if (projectionMonthFilter) {
+    const y = parseInt($('#projectionYearFilter')?.value || currentYear, 10) || currentYear;
+    let htmlM = `<option value="">Todos los meses</option>`;
+    for (let m = 1; m <= 12; m++) {
+      const ym = `${y}-${pad2(m)}`;
+      htmlM += `<option value="${ym}">${MONTHS_ES[m-1]}</option>`;
+    }
+    projectionMonthFilter.innerHTML = htmlM;
+
+    // Seleccionar mes actual si no hay filtro
+    const nowYM = `${currentYear}-${pad2(now.getMonth()+1)}`;
+    if (!APP_STATE.filters.projections.month) {
+      APP_STATE.filters.projections.month = nowYM;
+    }
+    projectionMonthFilter.value = APP_STATE.filters.projections.month || '';
   }
 }
 
 async function loadAll() {
-  await APIService.ping();
-
-  // Pareja
-  try { APP_STATE.partner = await APIService.leerPareja(); }
-  catch { APP_STATE.partner = null; }
-
-  // Datos
-  APP_STATE.data.categorias = await apiReadOrLocal('categorias');
-  APP_STATE.data.ingresos = await apiReadOrLocal('ingresos');
-  APP_STATE.data.gastos = await apiReadOrLocal('gastos');
-  APP_STATE.data.tarjetas = await apiReadOrLocal('tarjetas');
-
-  // tablas extra (si existen en tu Sheet)
-  try { APP_STATE.data.shared_requests = await apiReadOrLocal('shared_requests'); } catch {}
-  try { APP_STATE.data.gastos_compartidos = await apiReadOrLocal('gastos_compartidos'); } catch {}
-  try { APP_STATE.data.notificaciones = await APIService.leerNotificaciones(); } catch { APP_STATE.data.notificaciones = []; }
-
-  // categorías default si no hay
-  if (!APP_STATE.data.categorias?.length) {
-    await seedDefaultCategories();
-    APP_STATE.data.categorias = await apiReadOrLocal('categorias');
+  console.log('📦 Cargando todos los datos...');
+  
+  showLoading(true);
+  
+  try {
+    const [
+      categorias, 
+      ingresos, 
+      gastos, 
+      tarjetas,
+      gastosCompartidos,
+      notificaciones,
+      parejaResult
+    ] = await Promise.all([
+      APIService.leer('categorias'),
+      APIService.leer('ingresos'),
+      APIService.leer('gastos'),
+      APIService.leer('tarjetas'),
+      APIService.leer('gastos_compartidos', { __skipUserEmail: true }),
+      APIService.leerNotificaciones(),
+      APIService.getPareja()
+    ]);
+    
+    APP_STATE.data.categorias = categorias;
+    APP_STATE.data.ingresos = ingresos;
+    APP_STATE.data.gastos = gastos;
+    APP_STATE.data.tarjetas = tarjetas;
+    APP_STATE.data.gastos_compartidos = filterSharedForUser_(gastosCompartidos, APP_STATE.user.email);
+    APP_STATE.data.notificaciones = notificaciones;
+    APP_STATE.partner = parejaResult.partner || null;
+    
+    console.log('✅ Datos cargados:', {
+      categorias: categorias.length,
+      ingresos: ingresos.length,
+      gastos: gastos.length,
+      tarjetas: tarjetas.length,
+      notificaciones: notificaciones.length
+    });
+    
+    updateCategoryUI();
+    updateDashboard();
+    updateNotifications();
+    
+  } catch (err) {
+    console.error('Error cargando datos:', err);
+    showAlert('Error cargando datos del servidor', 'danger');
+  } finally {
+    showLoading(false);
   }
-
-  updateCategoryUI();
-  loadIncomes();
-  loadExpenses();
-  await refreshPartnerAndShared();
-  await refreshNotifications();
-  updateDashboard();
 }
 
-async function seedDefaultCategories() {
-  const defaults = [
-    { nombre:'Sueldo', tipo:'income' },
-    { nombre:'Freelance', tipo:'income' },
-    { nombre:'Alquiler', tipo:'fixed' },
-    { nombre:'Servicios', tipo:'fixed' },
-    { nombre:'Supermercado', tipo:'variable' },
-    { nombre:'Transporte', tipo:'variable' },
-    { nombre:'Salud', tipo:'variable' },
-    { nombre:'Tarjeta', tipo:'credit' }
-  ];
-  for (const c of defaults) {
-    const fila = { id: uid('cat'), ...c, userEmail: APP_STATE.user.email, createdAt: new Date().toISOString() };
-    try { await apiSaveOrLocal('categorias', fila); } catch {}
+async function reloadData() {
+  console.log('🔄 Recargando datos...');
+  showLoading(true);
+  
+  try {
+    await loadAll();
+    showAlert('Datos actualizados correctamente', 'success');
+  } catch (err) {
+    console.error('Error recargando datos:', err);
+    showAlert('Error al recargar datos', 'danger');
+  } finally {
+    showLoading(false);
   }
 }
 
 function updateCategoryUI() {
-  // filtro general de gastos
-  const filter = $('#expenseFilter');
-  if (filter) {
-    const cats = APP_STATE.data.categorias || [];
-    const opts = ['<option value="all">Todas las categorías</option>']
-      .concat(cats.filter(c=>c.tipo!=='income').map(c=>`<option value="${escapeHtml(c.nombre)}">${escapeHtml(c.nombre)}</option>`));
-    filter.innerHTML = opts.join('');
+  // Actualizar selects de categoría en ingresos
+  const incomeCategorySelect = $('#incomeCategorySelect');
+  if (incomeCategorySelect) {
+    const cats = APP_STATE.data.categorias?.filter(c => c.tipo === 'income') || [];
+    let html = '<option value="">Seleccionar categoría</option>';
+    cats.forEach(cat => {
+      html += `<option value="${escapeHtml(cat.nombre)}">${escapeHtml(cat.nombre)}</option>`;
+    });
+    incomeCategorySelect.innerHTML = html;
   }
-
-  // selects en modales
-  const expSel = $('#expenseCategorySelect');
-  if (expSel) {
-    const cats = APP_STATE.data.categorias || [];
-    expSel.innerHTML = '<option value="">Seleccionar categoría</option>' +
-      cats.filter(c=>c.tipo!=='income').map(c=>`<option value="${escapeHtml(c.nombre)}">${escapeHtml(c.nombre)}</option>`).join('');
+  
+  // Actualizar selects de categoría en gastos
+  const expenseCategorySelect = $('#expenseCategorySelect');
+  if (expenseCategorySelect) {
+    const cats = APP_STATE.data.categorias?.filter(c => c.tipo !== 'income') || [];
+    let html = '<option value="">Seleccionar categoría</option>';
+    cats.forEach(cat => {
+      html += `<option value="${escapeHtml(cat.nombre)}">${escapeHtml(cat.nombre)}</option>`;
+    });
+    expenseCategorySelect.innerHTML = html;
   }
-
-  const incSel = $('#incomeCategorySelect');
-  if (incSel) {
-    const cats = APP_STATE.data.categorias || [];
-    incSel.innerHTML = '<option value="">Seleccionar categoría</option>' +
-      cats.filter(c=>c.tipo==='income').map(c=>`<option value="${escapeHtml(c.nombre)}">${escapeHtml(c.nombre)}</option>`).join('');
-  }
-}
-
-function escapeHtml(s='') {
-  return String(s)
-    .replaceAll('&','&amp;').replaceAll('<','&lt;')
-    .replaceAll('>','&gt;').replaceAll('"','&quot;')
-    .replaceAll("'","&#039;");
-}
-
-// ===============================
-// Ingresos CRUD
-// ===============================
-function loadIncomes() {
-  const list = $('#incomesList');
-  if (!list) return;
-
-  const month = parseInt($('#incomeMonthSelect')?.value || '', 10);
-  const year = parseInt($('#incomeYearSelect')?.value || '', 10);
-
-  let items = (APP_STATE.data.ingresos || []).slice().sort((a,b)=>{
-    const da=parseDateAny(a.fecha)||new Date(0);
-    const db=parseDateAny(b.fecha)||new Date(0);
-    return db-da;
-  });
-
-  if (year && month) items = items.filter(x=>sameMonth(x.fecha, year, month));
-  else if (year) items = items.filter(x=> (parseDateAny(x.fecha)?.getFullYear()===year));
-  else if (month) items = items.filter(x=> (parseDateAny(x.fecha)?.getMonth()+1===month));
-
-  if (!items.length) {
-    list.innerHTML = `
-      <div class="p-6 text-center text-gray-500">
-        <i class="fas fa-plus-circle text-4xl mb-3"></i>
-        <p class="mb-3">No tienes ingresos registrados</p>
-        <button class="btn btn-accent btn-sm" onclick="document.getElementById('addIncomeBtn').click()">Agregar primer ingreso</button>
-      </div>`;
-    return;
-  }
-
-  const tpl = document.getElementById('incomeItemTemplate');
-  list.innerHTML = '';
-  items.forEach(it=>{
-    let node;
-    if (tpl?.content) {
-      node = tpl.content.firstElementChild.cloneNode(true);
-      node.dataset.id = it.id;
-      node.querySelector('[data-field="descripcion"]').textContent = it.descripcion || 'Ingreso';
-      node.querySelector('[data-field="fecha"]').textContent = fmtDate(it.fecha);
-      node.querySelector('[data-field="frecuencia"]').textContent = labelFreq(it.frecuencia);
-      node.querySelector('[data-field="categoria"]').textContent = it.categoria || 'General';
-      node.querySelector('[data-field="monto"]').textContent = fmtMoney(it.monto);
-    } else {
-      node = document.createElement('div');
-      node.className = 'p-4 border-b border-gray-100 flex items-center justify-between gap-4';
-      node.dataset.id = it.id;
-      node.innerHTML = `
-        <div class="min-w-0">
-          <div class="font-semibold text-gray-900 truncate">${escapeHtml(it.descripcion||'Ingreso')}</div>
-          <div class="text-xs text-gray-500 mt-1">${escapeHtml(fmtDate(it.fecha))} • ${escapeHtml(labelFreq(it.frecuencia))} • ${escapeHtml(it.categoria||'General')}</div>
-        </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <div class="font-bold text-green-600 text-right">${fmtMoney(it.monto)}</div>
-          <button class="btn btn-secondary btn-sm" data-action="edit-income"><i class="fas fa-pen"></i></button>
-          <button class="btn btn-danger btn-sm" data-action="delete-income"><i class="fas fa-trash"></i></button>
-        </div>`;
-    }
-    list.appendChild(node);
-  });
-}
-
-function onIncomeListClick(e) {
-  const btn = e.target.closest('button[data-action]');
-  if (!btn) return;
-  const row = e.target.closest('[data-id]');
-  const id = row?.dataset?.id;
-  if (!id) return;
-
-  const action = btn.dataset.action;
-  const item = (APP_STATE.data.ingresos||[]).find(x=>x.id===id);
-  if (!item) return;
-
-  if (action === 'edit-income') openIncomeModal(item);
-  if (action === 'delete-income') deleteIncome(item);
-}
-
-function openIncomeModal(item=null) {
-  const modal = $('#incomeModal');
-  if (!modal) return;
-
-  const form = $('#incomeForm');
-  form.reset();
-  form.querySelector('input[name="id"]').value = item?.id || '';
-  form.querySelector('input[name="descripcion"]').value = item?.descripcion || '';
-  form.querySelector('input[name="monto"]').value = item?.monto ?? '';
-  form.querySelector('input[name="fecha"]').value = toISO(item?.fecha) || todayISO();
-  form.querySelector('select[name="frecuencia"]').value = item?.frecuencia || 'monthly';
-  $('#incomeCategorySelect').value = item?.categoria || '';
-
-  setText('incomeModalTitle', item ? 'Editar Ingreso' : 'Nuevo Ingreso');
-  showModal('incomeModal');
-}
-
-async function saveIncome() {
-  const form = $('#incomeForm'); if (!form) return;
-  const id = form.querySelector('input[name="id"]').value || '';
-  const descripcion = form.querySelector('input[name="descripcion"]').value.trim();
-  const monto = safeNum(form.querySelector('input[name="monto"]').value);
-  const fecha = form.querySelector('input[name="fecha"]').value;
-  const frecuencia = form.querySelector('select[name="frecuencia"]').value;
-  const categoria = $('#incomeCategorySelect')?.value || '';
-
-  if (!descripcion || !fecha || !categoria) {
-    showAlert('Completá descripción, fecha y categoría.', 'warning');
-    return;
-  }
-
-  const fila = {
-    id: id || uid('inc'),
-    userEmail: APP_STATE.user.email,
-    descripcion, monto, fecha, frecuencia, categoria,
-    updatedAt: new Date().toISOString(),
-    createdAt: id ? undefined : new Date().toISOString()
-  };
-
-  try {
-    if (id) await apiUpdateOrLocal('ingresos', fila);
-    else await apiSaveOrLocal('ingresos', fila);
-
-    APP_STATE.data.ingresos = await apiReadOrLocal('ingresos');
-    closeAllModals();
-    loadIncomes();
-    updateDashboard();
-    showAlert(id ? 'Ingreso actualizado.' : 'Ingreso guardado.', 'success');
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo guardar el ingreso.', 'danger');
+  
+  // Actualizar filtro de categorías
+  const expenseFilter = $('#expenseFilter');
+  if (expenseFilter) {
+    const cats = APP_STATE.data.categorias?.filter(c => c.tipo !== 'income') || [];
+    let html = '<option value="all">Todas las categorías</option>';
+    cats.forEach(cat => {
+      html += `<option value="${escapeHtml(cat.nombre)}">${escapeHtml(cat.nombre)}</option>`;
+    });
+    expenseFilter.innerHTML = html;
   }
 }
 
-async function deleteIncome(item) {
-  if (!confirm(`Eliminar ingreso "${item.descripcion}"?`)) return;
-  try {
-    await apiDeleteOrLocal('ingresos', item.id);
-    APP_STATE.data.ingresos = await apiReadOrLocal('ingresos');
-    loadIncomes();
-    updateDashboard();
-    showAlert('Ingreso eliminado.', 'success');
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo eliminar.', 'danger');
-  }
-}
-
-// ===============================
-// Gastos CRUD + Compartidos
-// ===============================
-function loadExpenses() {
-  const list = $('#expensesList');
-  if (!list) return;
-
-  const month = parseInt($('#expenseMonthSelect')?.value || '', 10);
-  const year = parseInt($('#expenseYearSelect')?.value || '', 10);
-  const catFilter = $('#expenseFilter')?.value || 'all';
-  const tab = $('#expenseTabs .tab.active')?.dataset?.tab || 'all';
-
-  let items = (APP_STATE.data.gastos || []).slice().sort((a,b)=>{
-    const da=parseDateAny(a.fecha)||new Date(0);
-    const db=parseDateAny(b.fecha)||new Date(0);
-    return db-da;
-  });
-
-  // filtros
-  if (year && month) items = items.filter(x=>sameMonth(x.fecha, year, month));
-  else if (year) items = items.filter(x=> (parseDateAny(x.fecha)?.getFullYear()===year));
-  else if (month) items = items.filter(x=> (parseDateAny(x.fecha)?.getMonth()+1===month));
-
-  if (catFilter !== 'all') items = items.filter(x=>(x.categoria||'')===catFilter);
-
-  if (tab !== 'all') {
-    if (tab==='fixed') items = items.filter(x=>x.tipo==='fixed');
-    if (tab==='variable') items = items.filter(x=>x.tipo==='variable');
-    if (tab==='credit') items = items.filter(x=>x.tipo==='credit');
-  }
-
-  if (!items.length) {
-    list.innerHTML = `
-      <div class="p-6 text-center text-gray-500">
-        <i class="fas fa-receipt text-4xl mb-3"></i>
-        <p class="mb-3">No tienes gastos registrados</p>
-        <button class="btn btn-accent btn-sm" onclick="document.getElementById('addExpenseBtn').click()">Agregar primer gasto</button>
-      </div>`;
-    return;
-  }
-
-  const tpl = document.getElementById('expenseItemTemplate');
-  list.innerHTML = '';
-  items.forEach(it=>{
-    let node;
-    if (tpl?.content) {
-      node = tpl.content.firstElementChild.cloneNode(true);
-      node.dataset.id = it.id;
-      node.querySelector('[data-field="descripcion"]').textContent = it.descripcion || 'Gasto';
-      node.querySelector('[data-field="fecha"]').textContent = fmtDate(it.fecha);
-      node.querySelector('[data-field="tipo"]').textContent = labelTipo(it.tipo);
-      node.querySelector('[data-field="categoria"]').textContent = it.categoria || '—';
-      node.querySelector('[data-field="monto"]').textContent = fmtMoney(it.monto);
-    } else {
-      node = document.createElement('div');
-      node.className='p-4 border-b border-gray-100 flex items-center justify-between gap-4';
-      node.dataset.id = it.id;
-      node.innerHTML = `
-        <div class="min-w-0">
-          <div class="font-semibold text-gray-900 truncate">${escapeHtml(it.descripcion||'Gasto')}</div>
-          <div class="text-xs text-gray-500 mt-1">${escapeHtml(fmtDate(it.fecha))} • ${escapeHtml(labelTipo(it.tipo))} • ${escapeHtml(it.categoria||'—')}</div>
-        </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <div class="font-bold text-red-600 text-right">${fmtMoney(it.monto)}</div>
-          <button class="btn btn-secondary btn-sm" data-action="edit-expense"><i class="fas fa-pen"></i></button>
-          <button class="btn btn-danger btn-sm" data-action="delete-expense"><i class="fas fa-trash"></i></button>
-        </div>`;
-    }
-    list.appendChild(node);
-  });
-
-  // indicadores cards gastos
-  updateExpenseCards();
-}
-
-function onExpenseListClick(e) {
-  const btn = e.target.closest('button[data-action]');
-  if (!btn) return;
-  const row = e.target.closest('[data-id]');
-  const id = row?.dataset?.id;
-  if (!id) return;
-
-  const action = btn.dataset.action;
-  const item = (APP_STATE.data.gastos||[]).find(x=>x.id===id);
-  if (!item) return;
-
-  if (action === 'edit-expense') openExpenseModal(!!item.compartido, item);
-  if (action === 'delete-expense') deleteExpense(item);
-}
-
-function openExpenseModal(sharedDefault=false, item=null) {
-  const modal = $('#expenseModal'); if (!modal) return;
-  const form = $('#expenseForm');
-  form.reset();
-
-  form.querySelector('input[name="id"]').value = item?.id || '';
-  form.querySelector('input[name="descripcion"]').value = item?.descripcion || '';
-  form.querySelector('input[name="monto"]').value = item?.monto ?? '';
-  form.querySelector('input[name="fecha"]').value = toISO(item?.fecha) || todayISO();
-  $('#expenseCategorySelect').value = item?.categoria || '';
-  form.querySelector('select[name="tipo"]').value = item?.tipo || 'variable';
-  form.querySelector('select[name="metodo_pago"]').value = item?.metodo_pago || 'cash';
-
-  // credit fields
-  const isCredit = (item?.tipo || 'variable') === 'credit';
-  $('#creditCardFields')?.classList.toggle('hidden', !isCredit);
-  $('#expenseCardSelect')?.value = item?.tarjeta_id || '';
-  form.querySelector('input[name="cuotas"]').value = item?.cuotas ?? 1;
-
-  // shared
-  const isShared = item ? !!item.compartido : !!sharedDefault;
-  const sharedCheck = $('#isSharedCheck');
-  if (sharedCheck) sharedCheck.checked = isShared;
-  $('#sharedFields')?.classList.toggle('hidden', !isShared);
-
-  // porcentaje
-  const pct = item?.porcentaje_tu ?? 50;
-  const pctSel = $('#sharedPercentageSelect');
-  const customField = $('#customPercentageField');
-  const customInput = $('#customPercentageInput');
-  if (pctSel && customField && customInput) {
-    if ([0,50,100].includes(Number(pct))) {
-      pctSel.value = String(pct);
-      customField.classList.add('hidden');
-    } else {
-      pctSel.value = 'custom';
-      customField.classList.remove('hidden');
-      customInput.value = String(pct);
-    }
-  }
-
-  setText('expenseModalTitle', item ? 'Editar Gasto' : (isShared ? 'Nuevo Gasto Compartido' : 'Nuevo Gasto'));
-  showModal('expenseModal');
-}
-
-async function saveExpense() {
-  const form = $('#expenseForm'); if (!form) return;
-
-  const id = form.querySelector('input[name="id"]').value || '';
-  const descripcion = form.querySelector('input[name="descripcion"]').value.trim();
-  const monto = safeNum(form.querySelector('input[name="monto"]').value);
-  const fecha = form.querySelector('input[name="fecha"]').value;
-  const categoria = $('#expenseCategorySelect')?.value || '';
-  const tipo = form.querySelector('select[name="tipo"]').value;
-  const metodo_pago = form.querySelector('select[name="metodo_pago"]').value;
-
-  // credit
-  const tarjeta_id = $('#expenseCardSelect')?.value || '';
-  const cuotas = Math.max(1, parseInt(form.querySelector('input[name="cuotas"]').value || '1', 10));
-
-  // shared
-  const compartido = !!$('#isSharedCheck')?.checked;
-  let porcentaje_tu = 50;
-  const pctSel = $('#sharedPercentageSelect')?.value || '50';
-  if (pctSel === 'custom') porcentaje_tu = safeNum($('#customPercentageInput')?.value || 50);
-  else porcentaje_tu = safeNum(pctSel);
-
-  if (!descripcion || !fecha || !categoria) {
-    showAlert('Completá descripción, fecha y categoría.', 'warning');
-    return;
-  }
-  if (monto <= 0) {
-    showAlert('El monto debe ser mayor a 0.', 'warning');
-    return;
-  }
-
-  // Si es compartido, usamos flujo de solicitud (accept/reject) si hay pareja
-  if (compartido) {
-    if (!APP_STATE.partner?.email) {
-      showAlert('Primero vinculá tu pareja (Gastos Compartidos).', 'warning');
-      return;
-    }
-
-    // Si es edición de un gasto compartido ya guardado como personal, lo tratamos como normal.
-    // Para producción completa, lo ideal es que los compartidos vivan en "shared_requests" / "gastos_compartidos".
-    if (!id) {
-      try {
-        const req = {
-          requestId: uid('req'),
-          fromEmail: APP_STATE.user.email,
-          toEmail: APP_STATE.partner.email,
-          descripcion, monto, fecha, categoria, tipo, metodo_pago,
-          tarjeta_id, cuotas,
-          porcentaje_tu,
-          createdAt: new Date().toISOString(),
-          status: 'pending'
-        };
-        await APIService.crearSolicitudCompartido(req);
-        closeAllModals();
-        await refreshNotifications();
-        await refreshPartnerAndShared();
-        showAlert('Solicitud enviada a tu pareja. Queda pendiente de aprobación.', 'success', 5000);
-        return;
-      } catch (err) {
-        console.error(err);
-        showAlert('No se pudo enviar la solicitud compartida. Revisá tu Apps Script.', 'danger', 6000);
-        return;
-      }
-    }
-  }
-
-  // Gasto personal normal (o edición)
-  const fila = {
-    id: id || uid('gas'),
-    userEmail: APP_STATE.user.email,
-    descripcion, monto, fecha, categoria, tipo, metodo_pago,
-    tarjeta_id: tipo==='credit' ? tarjeta_id : '',
-    cuotas: tipo==='credit' ? cuotas : 1,
-    compartido: !!compartido,
-    porcentaje_tu: compartido ? porcentaje_tu : '',
-    updatedAt: new Date().toISOString(),
-    createdAt: id ? undefined : new Date().toISOString()
-  };
-
-  try {
-    if (id) await apiUpdateOrLocal('gastos', fila);
-    else await apiSaveOrLocal('gastos', fila);
-
-    APP_STATE.data.gastos = await apiReadOrLocal('gastos');
-    closeAllModals();
-    loadExpenses();
-    updateDashboard();
-    showAlert(id ? 'Gasto actualizado.' : 'Gasto guardado.', 'success');
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo guardar el gasto.', 'danger');
-  }
-}
-
-async function deleteExpense(item) {
-  if (!confirm(`Eliminar gasto "${item.descripcion}"?`)) return;
-  try {
-    await apiDeleteOrLocal('gastos', item.id);
-    APP_STATE.data.gastos = await apiReadOrLocal('gastos');
-    loadExpenses();
-    updateDashboard();
-    showAlert('Gasto eliminado.', 'success');
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo eliminar.', 'danger');
-  }
-}
-
-// ===============================
-// Pareja: invitación / aceptar
-// ===============================
-async function sendInvite() {
-  const email = ($('#partnerEmail')?.value || '').trim().toLowerCase();
-  if (!email || !email.includes('@')) {
-    showAlert('Ingresá un email válido.', 'warning');
-    return;
-  }
-  if (email === APP_STATE.user.email) {
-    showAlert('No podés invitarte a vos mismo.', 'warning');
-    return;
-  }
-
-  try {
-    const r = await APIService.crearInvitacion(email);
-    // backend debería enviar email; si no, mostramos código:
-    if (r.code) {
-      alert(`Código de invitación:\n\n${r.code}\n\n(Compartí este código con tu pareja)`);
-    }
-    closeAllModals();
-    showAlert('Invitación generada. Tu pareja debe aceptar con el código.', 'success', 6000);
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo crear la invitación. Revisá Apps Script.', 'danger', 6000);
-  }
-}
-
-async function acceptInvite() {
-  const code = ($('#inviteCode')?.value || '').trim();
-  if (!code) { showAlert('Ingresá el código.', 'warning'); return; }
-  try {
-    await APIService.aceptarInvitacion(code);
-    closeAllModals();
-    await refreshPartnerAndShared();
-    showAlert('¡Pareja vinculada!', 'success');
-    showSection('shared');
-  } catch (err) {
-    console.error(err);
-    showAlert('Código inválido o expirado.', 'danger', 6000);
-  }
-}
-
-async function refreshPartnerAndShared() {
-  try {
-    APP_STATE.partner = await APIService.leerPareja();
-  } catch { /* ignore */ }
-
-  // shared lists (si tu backend/Sheet las tiene)
-  try { APP_STATE.data.shared_requests = await apiReadOrLocal('shared_requests'); } catch {}
-  try { APP_STATE.data.gastos_compartidos = await apiReadOrLocal('gastos_compartidos'); } catch {}
-
-  // UI nombre partner en dashboard
-  setText('partnerName', APP_STATE.partner?.email ? (APP_STATE.partner.name || APP_STATE.partner.email) : 'Sin pareja vinculada');
-
-  // badge de pendientes (si usamos notificaciones o tabla requests)
-  const pending = (APP_STATE.data.notificaciones||[]).filter(n=>!isRead(n) && (n.type==='shared_request' || n.tipo==='shared_request')).length;
-  const b = $('#sharedBadge');
-  if (b) {
-    if (pending>0) { b.style.display='inline-block'; b.textContent = String(pending); }
-    else b.style.display='none';
-  }
-
-  if (APP_STATE.currentSection === 'shared') renderShared();
-  updateDashboard();
-}
-
-// ===============================
-// Notificaciones
-// ===============================
-function isRead(n) {
-  return String(n.read||n.leida||'').toLowerCase()==='true' || n.read===true || n.leida===true;
-}
-async function refreshNotifications() {
-  try {
-    APP_STATE.data.notificaciones = await APIService.leerNotificaciones();
-  } catch (err) {
-    // si no existe en backend, dejamos vacío
-    APP_STATE.data.notificaciones = [];
-  }
-  const unread = (APP_STATE.data.notificaciones||[]).filter(n=>!isRead(n)).length;
-  const badge = $('#notifBadge');
+function updateNotifications() {
+  const notificaciones = APP_STATE.data.notificaciones || [];
+  const unreadCount = notificaciones.filter(n => !n.leida).length;
+  
+  const badge = $('#notificationBadge');
   if (badge) {
-    if (unread>0) { badge.style.display='inline-block'; badge.textContent=String(unread); }
-    else badge.style.display='none';
+    if (unreadCount > 0) {
+      badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
   }
-}
-function renderNotifications() {
-  const box = $('#notifList'); if (!box) return;
-  const items = (APP_STATE.data.notificaciones||[])
-    .slice()
-    .sort((a,b)=> (parseDateAny(b.createdAt||b.fecha||0)||0) - (parseDateAny(a.createdAt||a.fecha||0)||0));
-
-  if (!items.length) {
-    box.innerHTML = `
-      <div class="p-6 text-center text-gray-500">
-        <i class="fas fa-bell-slash text-4xl mb-3"></i>
-        <p>No hay notificaciones</p>
-      </div>`;
-    return;
-  }
-
-  box.innerHTML = items.map(n=>{
-    const id = n.id || n.notifId || uid('n'); // si backend no manda id, no podremos marcar leída
-    const type = n.type || n.tipo || 'info';
-    const read = isRead(n);
-    const title = type==='shared_request' ? 'Solicitud de gasto compartido' : (n.title||n.titulo||'Notificación');
-    const msg = n.message || n.mensaje || n.descripcion || '';
-    const meta = n.meta ? (typeof n.meta==='string' ? n.meta : JSON.stringify(n.meta)) : '';
-    const amount = n.monto ? ` • <b>${fmtMoney(n.monto)}</b>` : '';
-    const date = n.fecha ? ` • ${escapeHtml(fmtDate(n.fecha))}` : '';
-    const reqId = n.requestId || n.reqId || n.sharedRequestId || '';
-
-    return `
-      <div class="p-3 border rounded-lg ${read?'opacity-60':''}" data-notif-id="${escapeHtml(id)}" data-req-id="${escapeHtml(reqId)}" data-type="${escapeHtml(type)}">
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0">
-            <div class="font-semibold">${escapeHtml(title)}</div>
-            <div class="text-xs text-gray-500 mt-1">${escapeHtml(msg)}${amount}${date}</div>
-          </div>
-          <div class="shrink-0 flex gap-2">
-            ${type==='shared_request' ? `
-              <button class="btn btn-accent btn-sm" data-action="accept">Aceptar</button>
-              <button class="btn btn-danger btn-sm" data-action="reject">Rechazar</button>
-            ` : `
-              <button class="btn btn-secondary btn-sm" data-action="markread">Ok</button>
-            `}
-          </div>
-        </div>
-      </div>`;
-  }).join('');
-}
-
-async function onNotifListClick(e) {
-  const btn = e.target.closest('button[data-action]');
-  if (!btn) return;
-  const card = e.target.closest('[data-notif-id]');
-  if (!card) return;
-
-  const notifId = card.dataset.notifId;
-  const type = card.dataset.type;
-  const reqId = card.dataset.reqId;
-  const action = btn.dataset.action;
-
-  try {
-    if (type === 'shared_request') {
-      if (!reqId) {
-        showAlert('Falta requestId en notificación.', 'warning', 6000);
-        return;
-      }
-      const decision = action === 'accept' ? 'accept' : 'reject';
-      await APIService.responderSolicitudCompartido(reqId, decision);
-      // marcar leída si hay id
-      if (notifId) await APIService.marcarNotificacionLeida(notifId);
-      await refreshPartnerAndShared();
-      await refreshNotifications();
-      renderNotifications();
-      showAlert(decision==='accept' ? 'Solicitud aceptada.' : 'Solicitud rechazada.', 'success');
+  
+  const panel = $('#notificationsList');
+  if (panel) {
+    if (notificaciones.length === 0) {
+      panel.innerHTML = `
+        <div class="p-4 text-center text-gray-500">
+          <i class="fas fa-bell-slash text-2xl mb-2"></i>
+          <p>No hay notificaciones</p>
+        </div>`;
       return;
     }
-
-    // info simple
-    if (notifId) await APIService.marcarNotificacionLeida(notifId);
-    await refreshNotifications();
-    renderNotifications();
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo procesar la notificación. Revisá Apps Script.', 'danger', 6000);
+    
+    let html = '';
+    notificaciones.forEach(notif => {
+      const tipoIcon = {
+        'info': 'fa-info-circle text-blue-500',
+        'success': 'fa-check-circle text-green-500',
+        'warning': 'fa-exclamation-triangle text-yellow-500',
+        'danger': 'fa-exclamation-circle text-red-500'
+      }[notif.tipo] || 'fa-bell text-gray-500';
+      
+      const fecha = new Date(notif.creado_en).toLocaleDateString('es-AR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      
+      html += `
+        <div class="p-3 border-b border-gray-100 ${notif.leida ? 'bg-gray-50' : 'bg-blue-50'}">
+          <div class="flex items-start gap-3">
+            <div class="mt-1"><i class="fas ${tipoIcon}"></i></div>
+            <div class="flex-1">
+              <div class="font-medium ${notif.leida ? 'text-gray-700' : 'text-gray-900'}">${escapeHtml(notif.titulo)}</div>
+              <div class="text-sm text-gray-600 mt-1">${escapeHtml(notif.mensaje)}</div>
+              <div class="text-xs text-gray-500 mt-1">${fecha}</div>
+            </div>
+            ${!notif.leida ? '<span class="w-2 h-2 bg-blue-500 rounded-full mt-2"></span>' : ''}
+          </div>
+        </div>`;
+    });
+    
+    panel.innerHTML = html;
   }
 }
 
-// ===============================
-// Dashboard + Charts
-// ===============================
-function updateDashboard() {
-  // Totales del mes actual
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth()+1;
-
-  const ingresosMes = (APP_STATE.data.ingresos||[])
-    .filter(x=>sameMonth(x.fecha, y, m))
-    .reduce((a,x)=>a+safeNum(x.monto),0);
-
-  // gastos personales (no contamos solicitudes compartidas pendientes; eso va por tabla compartidos)
-  const gastosMes = (APP_STATE.data.gastos||[])
-    .filter(x=>sameMonth(x.fecha, y, m))
-    .reduce((a,x)=>a+safeNum(x.monto),0);
-
-  setText('monthlyIncome', fmtMoney(ingresosMes));
-  setText('monthlyExpenses', fmtMoney(gastosMes));
-  setText('totalBalance', fmtMoney(ingresosMes - gastosMes));
-
-  setText('incomeHint', `${(APP_STATE.data.ingresos||[]).filter(x=>sameMonth(x.fecha,y,m)).length} ingresos`);
-
-  // hint budget
-  const hint = ingresosMes>0 ? `Gastas ${(gastosMes/ingresosMes*100).toFixed(0)}% de tus ingresos` : '—';
-  setText('budgetHint', ingresosMes>0 ? hint : '—');
-
-  // shared debts (estimado simple)
-  const shared = (APP_STATE.data.gastos_compartidos||[]);
-  const debt = calcSharedDebt(shared);
-  setText('sharedDebts', fmtMoney(debt.net)); // positivo => me deben, negativo => debo
-
-  // charts
-  drawExpensesChart();
-  drawTrendChart();
-
-  // actividad
-  renderRecentActivity();
+async function markAllNotificationsAsRead() {
+  try {
+    const result = await APIService.marcarTodasLeidas();
+    if (result.success) {
+      showAlert(result.message, 'success');
+      APP_STATE.data.notificaciones = await APIService.leerNotificaciones();
+      updateNotifications();
+      $('#notificationsPanel')?.classList.add('hidden');
+    }
+  } catch (err) {
+    console.error('Error marcando notificaciones:', err);
+    showAlert('Error al marcar notificaciones', 'danger');
+  }
 }
 
-function calcSharedDebt(sharedArr) {
-  const me = APP_STATE.user?.email;
-  if (!me) return { youOwe:0, owedToYou:0, net:0 };
+// =========================================================
+// SECCIÓN DASHBOARD (OPTIMIZADA)
+// =========================================================
 
-  let youOwe = 0;
-  let owedToYou = 0;
+function updateDashboard() {
+  console.log('📊 Actualizando dashboard...');
 
-  sharedArr.forEach(r=>{
-    const total = safeNum(r.total || r.monto || r.importe || r.amount);
-    const creator = r.creatorEmail || r.fromEmail || r.userEmail || r.creador;
-    const pctCreator = safeNum(r.porcentaje_creator ?? r.porcentaje_tu ?? r.pctCreator ?? 50);
+  const ingresos = APP_STATE.data.ingresos || [];
+  const gastos = APP_STATE.data.gastos || [];
+  const gastosCompartidosAll = APP_STATE.data.gastos_compartidos || [];
+  const gastosCompartidos = filterSharedForPair_(gastosCompartidosAll, APP_STATE.user?.email, partnerEmail);
 
-    // calculo shares
-    const creatorShare = total * (pctCreator/100);
-    const partnerShare = total - creatorShare;
+  // --- DINERO DISPONIBLE: Total ingresos - Total gastos ---
+  const totalIngresos = ingresos.reduce((sum, item) => sum + parseAmount(item.monto), 0);
+  const totalGastos = gastos.reduce((sum, item) => sum + parseAmount(item.monto), 0);
+  const dineroDisponible = totalIngresos - totalGastos;
 
-    // asumimos: el que registra (creator) pagó todo
-    if (creator === me) {
-      owedToYou += partnerShare;
-    } else {
-      youOwe += creatorShare; // mi parte cuando el otro pagó
+  // --- GASTOS DEL MES ACTUAL ---
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  
+  const gastosMes = gastos.filter(g => {
+    try {
+      const fecha = new Date(g.fecha);
+      return fecha.getMonth() + 1 === currentMonth && fecha.getFullYear() === currentYear;
+    } catch {
+      return false;
     }
   });
+  
+  const gastosMesTotal = gastosMes.reduce((sum, item) => sum + parseAmount(item.monto), 0);
 
-  return { youOwe, owedToYou, net: owedToYou - youOwe };
-}
+  // --- LO QUE ME DEBEN ESTE MES (Deudas Compartidas) ---
+  const deudasCompartidasMes = gastosCompartidos
+    .filter(gc => {
+      try {
+        const fecha = new Date(gc.fecha);
+        return fecha.getMonth() + 1 === currentMonth && fecha.getFullYear() === currentYear;
+      } catch {
+        return false;
+      }
+    })
+    .reduce((sum, item) => {
+      const monto = parseAmount(item.monto);
+      const pct = parseAmount(item.porcentaje_tu) || 50;
+      
+      // Si yo pagué menos del 50%, me deben dinero
+      if (pct < 50) {
+        const partePareja = monto * ((50 - pct) / 100);
+        return sum + partePareja;
+      }
+      return sum;
+    }, 0);
 
-function drawExpensesChart() {
-  const canvas = $('#expensesChart');
-  if (!canvas || !window.Chart) return;
+  // --- ACTUALIZAR UI ---
+  setText('totalBalance', fmtMoney(dineroDisponible));  // Dinero Disponible
+  setText('monthlyIncome', fmtMoney(gastosMesTotal));   // Gastos del mes
+  setText('monthlyExpenses', fmtMoney(deudasCompartidasMes));  // Me deben
 
-  const period = $('#expensePeriod')?.value || 'month';
-  const now = new Date();
-  let start;
-  if (period==='month') start = new Date(now.getFullYear(), now.getMonth(), 1);
-  else if (period==='quarter') start = new Date(now.getFullYear(), now.getMonth()-2, 1);
-  else start = new Date(now.getFullYear(), now.getMonth()-11, 1);
-
-  const filtered = (APP_STATE.data.gastos||[]).filter(x=>{
-    const d = parseDateAny(x.fecha);
-    return d && d >= start && d <= now;
-  });
-
-  const byCat = {};
-  filtered.forEach(x=>{
-    const c = x.categoria || 'Sin categoría';
-    byCat[c] = (byCat[c]||0) + safeNum(x.monto);
-  });
-
-  const labels = Object.keys(byCat);
-  const data = labels.map(k=>byCat[k]);
-
-  if (APP_STATE.charts.expenses) APP_STATE.charts.expenses.destroy();
-  APP_STATE.charts.expenses = new Chart(canvas, {
-    type:'doughnut',
-    data:{ labels, datasets:[{ data }] },
-    options:{ responsive:true, plugins:{ legend:{ position:'bottom' } } }
-  });
-}
-
-function drawTrendChart() {
-  const canvas = $('#trendChart');
-  if (!canvas || !window.Chart) return;
-
-  const n = parseInt($('#trendPeriod')?.value || '6', 10);
-  const now = new Date();
-  const labels = [];
-  const incData = [];
-  const expData = [];
-
-  for (let i=n-1; i>=0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
-    const y = d.getFullYear();
-    const m = d.getMonth()+1;
-    labels.push(monthLabel(y,m));
-
-    const inc = (APP_STATE.data.ingresos||[]).filter(x=>sameMonth(x.fecha,y,m)).reduce((a,x)=>a+safeNum(x.monto),0);
-    const exp = (APP_STATE.data.gastos||[]).filter(x=>sameMonth(x.fecha,y,m)).reduce((a,x)=>a+safeNum(x.monto),0);
-    incData.push(inc);
-    expData.push(exp);
+  // Actualizar partner info
+  if (APP_STATE.partner?.email) {
+    setText('partnerName', APP_STATE.partner.email);
+  } else {
+    setText('partnerName', 'Sin pareja');
   }
 
-  if (APP_STATE.charts.trend) APP_STATE.charts.trend.destroy();
-  APP_STATE.charts.trend = new Chart(canvas, {
-    type:'line',
-    data:{
-      labels,
-      datasets:[
-        { label:'Ingresos', data: incData, tension:0.25 },
-        { label:'Gastos', data: expData, tension:0.25 }
+  // Actualizar gráfico de distribución
+  updateExpensesChart(gastosMes);
+  updateTrendChart();
+  updateRecentActivity();
+}
+
+function updateExpensesChart(gastosMes) {
+  const expensesCanvas = $('#expensesChart');
+  if (!expensesCanvas || !window.Chart) return;
+  
+  if (APP_STATE.charts.expenses) {
+    APP_STATE.charts.expenses.destroy();
+  }
+  
+  // Agrupar gastos por categoría
+  const categorias = {};
+  gastosMes.forEach(gasto => {
+    const cat = gasto.categoria || 'Otros';
+    categorias[cat] = (categorias[cat] || 0) + (parseAmount(gasto.monto) || 0);
+  });
+  
+  const labels = Object.keys(categorias);
+  const data = Object.values(categorias);
+  
+  if (labels.length > 0) {
+    APP_STATE.charts.expenses = new Chart(expensesCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: data,
+          backgroundColor: [
+            '#0f766e', '#10b981', '#3b82f6', '#f59e0b', 
+            '#ef4444', '#8b5cf6', '#ec4899', '#f97316'
+          ]
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: {
+            position: 'bottom'
+          }
+        }
+      }
+    });
+  } else {
+    expensesCanvas.innerHTML = `
+      <div class="h-full flex items-center justify-center text-gray-500">
+        <div class="text-center">
+          <i class="fas fa-chart-pie text-4xl mb-2"></i>
+          <p>No hay gastos este mes</p>
+        </div>
+      </div>`;
+  }
+}
+
+function updateTrendChart() {
+  const trendCanvas = $('#trendChart');
+  if (!trendCanvas || !window.Chart) return;
+  
+  if (APP_STATE.charts.trend) {
+    APP_STATE.charts.trend.destroy();
+  }
+  
+  // Datos de ejemplo para tendencia
+  const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun'];
+  const ingresosData = [185000, 190000, 185000, 200000, 195000, 210000];
+  const gastosData = [120000, 125000, 130000, 128000, 135000, 140000];
+  
+  APP_STATE.charts.trend = new Chart(trendCanvas, {
+    type: 'line',
+    data: {
+      labels: meses,
+      datasets: [
+        {
+          label: 'Ingresos',
+          data: ingresosData,
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          tension: 0.4
+        },
+        {
+          label: 'Gastos',
+          data: gastosData,
+          borderColor: '#ef4444',
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          tension: 0.4
+        }
       ]
     },
-    options:{
-      responsive:true,
-      plugins:{ legend:{ position:'bottom' } },
-      scales:{ y:{ beginAtZero:true } }
+    options: {
+      responsive: true,
+      plugins: {
+        legend: {
+          position: 'top'
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            callback: function(value) {
+              return fmtMoney(value).replace('$', '');
+            }
+          }
+        }
+      }
     }
   });
 }
 
-function renderRecentActivity() {
-  const box = $('#recentActivity');
-  if (!box) return;
-
-  const events = [];
-  (APP_STATE.data.ingresos||[]).forEach(x=> events.push({ type:'inc', fecha:x.fecha, text:`Ingreso: ${x.descripcion}`, amount:x.monto }));
-  (APP_STATE.data.gastos||[]).forEach(x=> events.push({ type:'exp', fecha:x.fecha, text:`Gasto: ${x.descripcion}`, amount:x.monto }));
-  events.sort((a,b)=>(parseDateAny(b.fecha)||0)-(parseDateAny(a.fecha)||0));
-
-  const top = events.slice(0,6);
-  if (!top.length) {
-    box.innerHTML = `
+function updateRecentActivity() {
+  const container = $('#recentActivity');
+  if (!container) return;
+  
+  const actividades = [];
+  
+  // Agregar últimos 3 ingresos
+  (APP_STATE.data.ingresos || []).slice(0, 3).forEach(ingreso => {
+    actividades.push({
+      tipo: 'ingreso',
+      descripcion: ingreso.descripcion,
+      monto: ingreso.monto,
+      fecha: ingreso.fecha,
+      icono: 'fas fa-arrow-up text-green-500'
+    });
+  });
+  
+  // Agregar últimos 3 gastos (incluyendo gastos compartidos que son del usuario)
+  (APP_STATE.data.gastos || []).slice(0, 3).forEach(gasto => {
+    actividades.push({
+      tipo: 'gasto',
+      descripcion: gasto.descripcion,
+      monto: gasto.monto,
+      fecha: gasto.fecha,
+      icono: 'fas fa-arrow-down text-red-500'
+    });
+  });
+  
+  // Ordenar por fecha
+  actividades.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  
+  if (actividades.length === 0) {
+    container.innerHTML = `
       <div class="p-6 text-center text-gray-500">
         <i class="fas fa-inbox text-4xl mb-3"></i>
         <p>No hay actividad reciente</p>
       </div>`;
     return;
   }
-
-  box.innerHTML = top.map(ev=>`
-    <div class="p-4 border-b border-gray-100 flex items-center justify-between">
-      <div class="min-w-0">
-        <div class="font-semibold text-gray-900 truncate">${escapeHtml(ev.text)}</div>
-        <div class="text-xs text-gray-500 mt-1">${escapeHtml(fmtDate(ev.fecha))}</div>
-      </div>
-      <div class="font-bold ${ev.type==='inc'?'text-green-600':'text-red-600'}">${fmtMoney(ev.amount)}</div>
-    </div>
-  `).join('');
+  
+  let html = '';
+  actividades.slice(0, 5).forEach(act => {
+    html += `
+      <div class="p-4 border-b border-gray-100 flex items-center gap-3">
+        <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
+          <i class="${act.icono}"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold text-gray-900 truncate">${escapeHtml(act.descripcion)}</div>
+          <div class="text-xs text-gray-500">${formatDate(act.fecha)}</div>
+        </div>
+        <div class="font-bold ${act.tipo === 'ingreso' ? 'text-green-600' : 'text-red-600'}">
+          ${fmtMoney(act.monto)}
+        </div>
+      </div>`;
+  });
+  
+  container.innerHTML = html;
 }
 
-// ===============================
-// Cards resumen en sección gastos
-// ===============================
-function updateExpenseCards() {
-  const fixed = (APP_STATE.data.gastos||[]).filter(x=>x.tipo==='fixed').reduce((a,x)=>a+safeNum(x.monto),0);
-  const variable = (APP_STATE.data.gastos||[]).filter(x=>x.tipo==='variable').reduce((a,x)=>a+safeNum(x.monto),0);
-  const credit = (APP_STATE.data.gastos||[]).filter(x=>x.tipo==='credit').reduce((a,x)=>a+safeNum(x.monto),0);
+// =========================================================
+// SECCIÓN GASTOS (CON TABS FUNCIONALES) - CORREGIDA
+// =========================================================
 
-  setText('fixedExpenses', fmtMoney(fixed));
-  setText('variableExpenses', fmtMoney(variable));
-  setText('creditExpenses', fmtMoney(credit));
-  setText('fixedCount', String((APP_STATE.data.gastos||[]).filter(x=>x.tipo==='fixed').length));
-  setText('variableCount', String((APP_STATE.data.gastos||[]).filter(x=>x.tipo==='variable').length));
-  setText('creditCount', String((APP_STATE.data.gastos||[]).filter(x=>x.tipo==='credit').length));
-}
+async function loadExpenses() {
+  console.log('📥 Cargando gastos...');
+  const list = $('#expensesList');
+  if (!list) return;
+  
+  showLoading(true);
+  
+  try {
+    // Cargar GASTOS NORMALES
+    const gastosNormales = await APIService.leer('gastos');
+    
+    // Cargar GASTOS COMPARTIDOS donde el usuario es el creador
+    const gastosCompartidosAll = await APIService.leer('gastos_compartidos', { __skipUserEmail: true });
+    const gastosCompartidos = filterSharedForUser_(gastosCompartidosAll || [], APP_STATE.user.email);
+    
+    // Combinar ambos tipos de gastos
+    let todosLosGastos = (gastosNormales || []).map(g => ({ ...g, source: 'gastos' }));
+    
+    // Convertir gastos compartidos al formato de gastos normales
+    gastosCompartidos.forEach(gastoCompartido => {
+        const meta = parseSharedMeta(gastoCompartido.estado);
 
-// ===============================
-// Shared section render
-// ===============================
-function renderShared() {
-  const hasPartner = !!APP_STATE.partner?.email;
-  $('#noPartnerSection')?.classList.toggle('hidden', hasPartner);
-  $('#partnerSection')?.classList.toggle('hidden', !hasPartner);
+        const gastoConvertido = {
+          id: gastoCompartido.id,
+          source: 'gastos_compartidos',
+          email_pareja: gastoCompartido.email_pareja || getPartnerEmail(),
+          email_usuario: gastoCompartido.email_usuario,
+          descripcion: gastoCompartido.descripcion,
+          monto: gastoCompartido.monto,
+          fecha: gastoCompartido.fecha,
+          categoria: gastoCompartido.categoria,
+          tipo: (meta && meta.tipo) ? meta.tipo : ((meta && meta.metodo_pago === 'credit') || (meta && meta.tarjeta_id)) ? 'credit' : (gastoCompartido.tarjeta_id ? 'credit' : 'variable'),
+          metodo_pago: (meta && meta.metodo_pago) ? meta.metodo_pago : ( (meta && meta.tipo === 'credit') ? 'credit' : (gastoCompartido.metodo_pago || 'cash') ),
+          tarjeta_id: gastoCompartido.tarjeta_id || gastoCompartido.tarjetaId || '',
+          cuotas_totales: gastoCompartido.cuotas_totales || gastoCompartido.cuotasTotal || gastoCompartido.cuotas || '',
+          cuota_actual: gastoCompartido.cuota_actual || gastoCompartido.cuotaActual || '',
+          monto_total: gastoCompartido.monto_total || gastoCompartido.montoTotal || '',
+          es_cuota: gastoCompartido.es_cuota || gastoCompartido.esCuota || '',
+          compartido: 'true',
+          porcentaje_tu: gastoCompartido.porcentaje_tu || 50,
+          creado_en: gastoCompartido.creado_en
+        };
 
-  if (!hasPartner) return;
+        // Si la hoja no tiene columnas extra (crédito/cuotas), las recuperamos desde META en "estado"
+        if (meta) {
+          if (meta.tipo) gastoConvertido.tipo = String(meta.tipo).toLowerCase();
+          if (meta.metodo_pago) gastoConvertido.metodo_pago = String(meta.metodo_pago).toLowerCase();
+          if (meta.tarjeta_id) gastoConvertido.tarjeta_id = meta.tarjeta_id;
+          if (meta.cuotas_totales) gastoConvertido.cuotas_totales = meta.cuotas_totales;
+          if (meta.cuota_actual) gastoConvertido.cuota_actual = meta.cuota_actual;
+          if (meta.monto_total) gastoConvertido.monto_total = meta.monto_total;
+          if (typeof meta.es_cuota !== 'undefined') gastoConvertido.es_cuota = meta.es_cuota ? 'true' : 'false';
+        }
+        todosLosGastos.push(gastoConvertido);
+    });
+    
 
-  setText('partnerNameDisplay', APP_STATE.partner.name || APP_STATE.partner.email);
-  setText('partnerNameDisplay2', APP_STATE.partner.name || APP_STATE.partner.email);
+    // Evitar duplicados visuales (por re-render/merge)
+    const uniq = new Map();
+    (todosLosGastos || []).forEach(it => {
+      const key = `${it.source || 'gastos'}:${it.id || ''}`;
+      if (!uniq.has(key)) uniq.set(key, it);
+    });
+    todosLosGastos = Array.from(uniq.values());
 
-  const debt = calcSharedDebt(APP_STATE.data.gastos_compartidos||[]);
-  setText('youOwe', fmtMoney(debt.youOwe));
-  setText('owedToYou', fmtMoney(debt.owedToYou));
+    // Si por versiones anteriores se guardó el mismo gasto en GASTOS y en GASTOS_COMPARTIDOS,
+    // eliminamos el duplicado "gastos" y nos quedamos con el compartido.
+    const sig = (it) => {
+      const d = String(it.descripcion || '').trim().toLowerCase();
+      const f = String(it.fecha || '').trim();
+      const c = String(it.categoria || '').trim().toLowerCase();
+      const m = Number(parseAmount(it.monto)).toFixed(2);
+      const t = String(it.tipo || '').trim().toLowerCase();
+      const mp = String(it.metodo_pago || '').trim().toLowerCase();
+      return `${f}|${d}|${c}|${m}|${t}|${mp}`;
+    };
+    const sharedSigs = new Set((todosLosGastos || []).filter(x => x.source === 'gastos_compartidos').map(sig));
+    if (sharedSigs.size) {
+      todosLosGastos = (todosLosGastos || []).filter(x => !(x.source === 'gastos' && (String(x.compartido).toLowerCase() === 'true') && sharedSigs.has(sig(x))));
+    }
 
-  // Lista de compartidos aprobados (simple)
-  const box = $('#sharedExpensesList');
-  if (!box) return;
 
-  const arr = (APP_STATE.data.gastos_compartidos||[]).slice().sort((a,b)=>(parseDateAny(b.fecha)||0)-(parseDateAny(a.fecha)||0));
-  if (!arr.length) {
-    box.innerHTML = `
+    
+    // Normalizar tipo para UI (Crédito por método/tarjeta aunque la categoría sea variable)
+    const catType = (name) => {
+      const cats = (APP_STATE.data && APP_STATE.data.categorias) ? APP_STATE.data.categorias : [];
+      const c = cats.find(x => String(x.nombre || x.categoria || '').toLowerCase() === String(name || '').toLowerCase());
+      const t = (c && (c.tipo || c.tipo_gasto)) ? String(c.tipo || c.tipo_gasto).toLowerCase() : '';
+      if (t.includes('fij')) return 'fixed';
+      if (t.includes('cred')) return 'credit';
+      return 'variable';
+    };
+    const isCredit = (it) => (String(it.metodo_pago).toLowerCase() === 'credit' || String(it.tipo).toLowerCase() === 'credit' || (it.tarjeta_id && String(it.tarjeta_id).trim() !== ''));
+    todosLosGastos = (todosLosGastos || []).map(it => {
+      const it2 = { ...it };
+      if (isCredit(it2)) it2.tipo = 'credit';
+      else it2.tipo = (it2.tipo === 'fixed' || it2.tipo === 'variable') ? it2.tipo : catType(it2.categoria);
+      if (!it2.metodo_pago) it2.metodo_pago = (it2.tipo === 'credit') ? 'credit' : 'cash';
+      return it2;
+    });
+
+APP_STATE.data.gastos = todosLosGastos;
+    
+  } catch (err) {
+    console.error('Error cargando gastos:', err);
+    APP_STATE.data.gastos = [];
+  }
+  
+  let gastos = APP_STATE.data.gastos || [];
+  const filterType = APP_STATE.filters.expenses.tipo;
+  const filterCategory = APP_STATE.filters.expenses.category;
+  const filterMonth = APP_STATE.filters.expenses.month;
+  const filterYear = APP_STATE.filters.expenses.year;
+  
+  // Aplicar filtros
+  gastos = gastos.filter(item => {
+    if (filterType !== 'all' && item.tipo !== filterType) return false;
+    if (filterCategory !== 'all' && item.categoria !== filterCategory) return false;
+    
+    if (filterMonth || filterYear) {
+      try {
+        const fecha = new Date(item.fecha);
+        const itemMonth = fecha.getMonth() + 1;
+        const itemYear = fecha.getFullYear();
+        
+        if (filterMonth && itemMonth !== parseInt(filterMonth)) return false;
+        if (filterYear && itemYear !== parseInt(filterYear)) return false;
+      } catch {
+        return false;
+      }
+    }
+    
+    return true;
+  });
+  
+  // Calcular totales por tipo - MOSTRAR TOTALES COMPLETOS
+  let totalFijos = 0, totalVariables = 0, totalCredito = 0, totalGeneral = 0;
+  let countFijos = 0, countVariables = 0, countCredito = 0;
+
+  const isCreditExpense = (it) => (String(it.metodo_pago).toLowerCase() === 'credit' || String(it.tipo).toLowerCase() === 'credit' || (it.tarjeta_id && String(it.tarjeta_id).trim() !== ''));
+
+  gastos.forEach(item => {
+    const montoTotal = parseAmount(item.monto);
+    totalGeneral += montoTotal;
+
+    if (isCreditExpense(item)) {
+      totalCredito += montoTotal;
+      countCredito++;
+    } else if (item.tipo === 'fixed') {
+      totalFijos += montoTotal;
+      countFijos++;
+    } else {
+      totalVariables += montoTotal;
+      countVariables++;
+    }
+  });
+  
+  // Actualizar tarjetas de resumen (mostrando totales)
+  setText('fixedExpenses', fmtMoney(totalFijos));
+  setText('fixedCount', countFijos);
+  setText('variableExpenses', fmtMoney(totalVariables));
+  setText('variableCount', countVariables);
+  setText('creditExpenses', fmtMoney(totalCredito));
+  setText('creditCount', countCredito);
+  
+  // Determinar qué sumatoria mostrar según el tab activo
+  let sumatoriaHTML = '';
+  const activeTab = APP_STATE.filters.expenses.tipo || 'all';
+  
+  switch(activeTab) {
+    case 'all':
+      sumatoriaHTML = `
+        <div class="p-4 bg-gray-50 border-b border-gray-200">
+          <div class="flex justify-between items-center mb-2">
+            <div class="font-semibold text-gray-700">TOTAL DE GASTOS:</div>
+            <div class="text-xl font-bold text-red-600">${fmtMoney(totalGeneral)}</div>
+          </div>
+          <div class="grid grid-cols-3 gap-4 text-sm">
+            <div class="text-center p-2 bg-blue-50 rounded">
+              <div class="font-semibold text-primary">Fijos</div>
+              <div class="font-bold">${fmtMoney(totalFijos)}</div>
+              <div class="text-xs text-gray-500">${countFijos} gastos</div>
+            </div>
+            <div class="text-center p-2 bg-yellow-50 rounded">
+              <div class="font-semibold text-warning">Variables</div>
+              <div class="font-bold">${fmtMoney(totalVariables)}</div>
+              <div class="text-xs text-gray-500">${countVariables} gastos</div>
+            </div>
+            <div class="text-center p-2 bg-red-50 rounded">
+              <div class="font-semibold text-danger">Crédito</div>
+              <div class="font-bold">${fmtMoney(totalCredito)}</div>
+              <div class="text-xs text-gray-500">${countCredito} gastos</div>
+            </div>
+          </div>
+        </div>`;
+      break;
+      
+    case 'fixed':
+      sumatoriaHTML = `
+        <div class="p-4 bg-blue-50 border-b border-blue-200 flex justify-between items-center">
+          <div>
+            <div class="font-semibold text-blue-700">TOTAL GASTOS FIJOS</div>
+            <div class="text-sm text-blue-600">${countFijos} gastos</div>
+          </div>
+          <div class="text-2xl font-bold text-primary">${fmtMoney(totalFijos)}</div>
+        </div>`;
+      break;
+      
+    case 'variable':
+      sumatoriaHTML = `
+        <div class="p-4 bg-yellow-50 border-b border-yellow-200 flex justify-between items-center">
+          <div>
+            <div class="font-semibold text-yellow-700">TOTAL GASTOS VARIABLES</div>
+            <div class="text-sm text-yellow-600">${countVariables} gastos</div>
+          </div>
+          <div class="text-2xl font-bold text-warning">${fmtMoney(totalVariables)}</div>
+        </div>`;
+      break;
+      
+    case 'credit':
+      sumatoriaHTML = `
+        <div class="p-4 bg-red-50 border-b border-red-200 flex justify-between items-center">
+          <div>
+            <div class="font-semibold text-red-700">TOTAL GASTOS CRÉDITO</div>
+            <div class="text-sm text-red-600">${countCredito} gastos</div>
+          </div>
+          <div class="text-2xl font-bold text-danger">${fmtMoney(totalCredito)}</div>
+        </div>`;
+      break;
+  }
+  
+  if (gastos.length === 0) {
+    list.innerHTML = `
       <div class="p-6 text-center text-gray-500">
         <i class="fas fa-receipt text-4xl mb-3"></i>
-        <p>No hay gastos compartidos</p>
+        <p class="mb-3">No hay gastos registrados</p>
+        <button class="btn btn-accent btn-sm bg-primary text-white px-3 py-1 rounded text-sm hover:bg-teal-700" onclick="openExpenseModal()">
+          <i class="fas fa-plus"></i> Agregar primer gasto
+        </button>
+      </div>`;
+    showLoading(false);
+    return;
+  }
+  
+  let html = sumatoriaHTML;
+  
+  // Ordenar por fecha (más reciente primero)
+  gastos.sort((a, b) => new Date(b.fecha || b.creado_en) - new Date(a.fecha || a.creado_en));
+  
+  gastos.forEach(item => {
+    const fechaFormateada = formatDate(item.fecha || item.creado_en);
+    const categoria = item.categoria || 'General';
+    const tipoMap = {
+      'fixed': 'Fijo',
+      'variable': 'Variable',
+      'credit': 'Crédito'
+    };
+    const tipo = tipoMap[item.tipo] || 'Variable';
+    const metodoMap = {
+      'cash': 'Efectivo',
+      'debit': 'Débito',
+      'credit': 'Crédito',
+      'transfer': 'Transferencia'
+    };
+    const metodo = metodoMap[item.metodo_pago] || 'Efectivo';
+    
+    const montoTotal = parseAmount(item.monto);
+    
+    // Para gastos compartidos: mostrar observación con participación
+    let observacion = '';
+    let badgeCompartido = '';
+    
+    if (item.compartido === 'true' || item.porcentaje_tu) {
+      const porcentaje = parseAmount(item.porcentaje_tu) || 50;
+      const miParte = montoTotal * (porcentaje / 100);
+      const partePareja = montoTotal - miParte;
+      
+      badgeCompartido = '<span class="badge badge-success ml-2">Compartido</span>';
+      observacion = `
+        <div class="mt-2 p-2 bg-blue-50 rounded text-sm">
+          <div class="font-medium text-blue-700">Gasto Compartido:</div>
+          <div class="mt-1 text-blue-700">
+            <span class="font-medium">Total del mes:</span> <span class="font-bold">${fmtMoney(montoTotal)}</span>
+            ${ (item.tipo === 'credit' && item.cuotas_totales && parseInt(item.cuotas_totales) > 1 && parseAmount(item.monto_total)) ? ` <span class=\"text-blue-500\">•</span> <span class=\"font-medium\">Total compra:</span> <span class=\"font-bold\">${fmtMoney(parseAmount(item.monto_total))}</span>` : '' }
+          </div>
+          <div class="grid grid-cols-2 gap-2 mt-1">
+            <div class="text-blue-600">
+              <i class="fas fa-user mr-1"></i> Tu pagas: <span class="font-bold">${fmtMoney(miParte)}</span> (${porcentaje}%)
+            </div>
+            <div class="text-green-600">
+              <i class="fas fa-user-friends mr-1"></i> Pareja paga: <span class="font-bold">${fmtMoney(partePareja)}</span> (${100 - porcentaje}%)
+            </div>
+          </div>
+        </div>`;
+    }
+    
+    // Para gastos a crédito con cuotas: calcular cuota mensual
+    // Para gastos a crédito con cuotas: calcular cuota mensual
+let infoCuotas = '';
+if (item.tipo === 'credit' && item.cuotas_totales && parseInt(item.cuotas_totales) > 1) {
+  const cuotaActual = item.cuota_actual || 1;
+  const cuotasTotales = parseInt(item.cuotas_totales) || 1;
+  const montoTotal = parseAmount(item.monto_total) || (parseAmount(item.monto) * cuotasTotales);
+  
+  infoCuotas = `<div class="text-xs text-purple-600 mt-1">
+    <i class="fas fa-calendar-alt mr-1"></i> Cuota ${cuotaActual}/${cuotasTotales} • Total: ${fmtMoney(montoTotal)}
+  </div>`;
+}
+    
+    html += `
+      <div class="p-4 border-b border-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+        <div class="flex items-center justify-between gap-4">
+          <div class="flex-1 min-w-0">
+            <div class="font-semibold text-gray-900 truncate flex items-center gap-2">
+              <i class="fas fa-arrow-down text-red-500"></i>
+              ${escapeHtml(item.descripcion || 'Gasto')}
+              ${badgeCompartido}
+            </div>
+            <div class="text-xs text-gray-500 mt-1">
+              <span class="inline-flex items-center gap-1">
+                <i class="far fa-calendar"></i> ${escapeHtml(fechaFormateada)}
+              </span>
+              <span class="mx-2">•</span>
+              <span class="inline-flex items-center gap-1">
+                <i class="fas fa-tag"></i> ${escapeHtml(categoria)}
+              </span>
+              <span class="mx-2">•</span>
+              <span class="inline-flex items-center gap-1">
+                <i class="fas fa-credit-card"></i> ${escapeHtml(metodo)}
+              </span>
+              <span class="mx-2">•</span>
+              <span class="badge ${tipo === 'Fijo' ? 'badge-primary' : tipo === 'Variable' ? 'badge-warning' : 'badge-danger'}">
+                ${escapeHtml(tipo)}
+              </span>
+            </div>
+            ${infoCuotas}
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <div class="font-bold text-red-600 text-right text-lg">${fmtMoney(montoTotal)}</div>
+            <div class="flex gap-1">
+              <button class="btn btn-sm btn-secondary bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm hover:bg-gray-300" onclick="editExpense('${item.id}')">
+                <i class="fas fa-edit"></i>
+              </button>
+              <button class="btn btn-sm btn-danger bg-red-100 text-red-700 px-2 py-1 rounded text-sm hover:bg-red-200" onclick="deleteExpense('${item.id}')">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+        ${observacion}
+      </div>`;
+  });
+  
+  list.innerHTML = html;
+  showLoading(false);
+}
+
+
+// =========================================================
+// SECCIÓN GASTOS COMPARTIDOS (CON TABLA Y 3 TARJETAS)
+// =========================================================
+
+
+async function loadInvitesNoPartnerUI_() {
+  try {
+    const receivedList = $('#receivedInvitesList');
+    const sentList = $('#sentInvitesList');
+    if (!receivedList && !sentList) return;
+
+    const myEmail = (APP_STATE.user?.email || '').toLowerCase().trim();
+    if (!myEmail) return;
+
+    const received = await APIService.leer('invitaciones', { email_to: myEmail, estado: 'pendiente' });
+    const sent = await APIService.leer('invitaciones', { email_from: myEmail, estado: 'pendiente' });
+
+    if (receivedList) {
+      if (!received.length) {
+        receivedList.innerHTML = '<div class="text-sm text-gray-500">Sin invitaciones pendientes.</div>';
+      } else {
+        receivedList.innerHTML = received.map(inv => {
+          const from = escapeHTML(inv.email_from || '');
+          const code = escapeHTML(inv.codigo || '');
+          const id = escapeHTML(inv.id || '');
+          return `
+            <div class="flex items-center justify-between gap-3 p-3 rounded-lg border border-gray-200">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-gray-800 truncate">De: ${from}</div>
+                <div class="text-xs text-gray-500">Código: <span class="font-mono">${code}</span> · ID: <span class="font-mono">${id}</span></div>
+              </div>
+              <button class="btn btn-accent bg-primary text-white px-3 py-2 rounded-lg hover:bg-teal-700 text-sm" data-action="acceptInvite" data-invite-id="${id}">
+                Aceptar
+              </button>
+            </div>`;
+        }).join('');
+      }
+    }
+
+    if (sentList) {
+      if (!sent.length) {
+        sentList.innerHTML = '<div class="text-sm text-gray-500">No has enviado invitaciones pendientes.</div>';
+      } else {
+        sentList.innerHTML = sent.map(inv => {
+          const to = escapeHTML(inv.email_to || '');
+          const code = escapeHTML(inv.codigo || '');
+          const id = escapeHTML(inv.id || '');
+          return `
+            <div class="p-3 rounded-lg border border-gray-200">
+              <div class="text-sm font-medium text-gray-800 truncate">Para: ${to}</div>
+              <div class="text-xs text-gray-500">Compartí este código con tu pareja para que acepte: <span class="font-mono">${code}</span></div>
+              <div class="text-xs text-gray-400 mt-1">ID interno: <span class="font-mono">${id}</span></div>
+            </div>`;
+        }).join('');
+      }
+    }
+  } catch (e) {
+    console.warn('No se pudieron cargar invitaciones:', e);
+  }
+}
+
+
+async function loadSharedSection() {
+  // 🔁 Modo "Invitaciones" (como antes): ocultamos el resumen/listado de gastos compartidos
+  try {
+    const noPartnerSection = document.getElementById('noPartnerSection');
+    const partnerSection = document.getElementById('partnerSection');
+    if (noPartnerSection) noPartnerSection.classList.remove('hidden');
+    if (partnerSection) partnerSection.classList.add('hidden');
+
+    // Ocultar tarjetas/resumen si existen
+    ['sharedTotal','sharedYouOwe','sharedOwedToYou'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.closest('.data-card')?.classList?.add('hidden');
+    });
+    const sharedList = document.getElementById('sharedExpensesList');
+    if (sharedList) sharedList.closest('.data-card')?.classList?.add('hidden');
+
+    document.querySelectorAll('button').forEach(btn => {
+      const t = (btn.textContent || '').toLowerCase();
+      if (t.includes('nuevo gasto compartido') || t.includes('liquidar deudas')) btn.classList.add('hidden');
+    });
+  } catch (_) {}
+
+  console.log('👥 Cargando gastos compartidos...');
+  
+  const noPartnerSection = $('#noPartnerSection');
+  const partnerSection = $('#partnerSection');
+  const sharedList = $('#sharedExpensesList');
+  
+  // Cargar pareja
+  try {
+    const result = await APIService.getPareja();
+    APP_STATE.partner = result.partner;
+  } catch (err) {
+    console.error('Error cargando pareja:', err);
+  }
+  
+  
+  // Mostrar invitaciones pendientes (recibidas y enviadas) incluso si aún no hay pareja vinculada
+  await loadInvitesNoPartnerUI_();
+if (!APP_STATE.partner) {
+    noPartnerSection?.classList.remove('hidden');
+    partnerSection?.classList.add('hidden');
+    // Sin pareja: dejamos la sección de invitaciones visible
+    return;
+  }
+  
+  // Con pareja: NO ocultamos invitaciones, solo mostramos tablero adicional
+  noPartnerSection?.classList.remove('hidden');
+  partnerSection?.classList.remove('hidden');
+  
+  // Cargar gastos compartidos
+  try {
+    APP_STATE.data.gastos_compartidos = await APIService.leer('gastos_compartidos', { __skipUserEmail: true });
+  } catch (err) {
+    console.error('Error cargando gastos compartidos:', err);
+    APP_STATE.data.gastos_compartidos = [];
+  }
+  
+  const partnerEmail = APP_STATE.partner?.email || '';
+  const gastosCompartidosAll = APP_STATE.data.gastos_compartidos || [];
+  const gastosCompartidos = filterSharedForPair_(gastosCompartidosAll, APP_STATE.user?.email, partnerEmail);
+  const filterMonth = APP_STATE.filters.shared.month;
+  const filterYear = APP_STATE.filters.shared.year;
+  const filterTipo = APP_STATE.filters.shared.tipo;
+  
+  // Filtrar gastos
+  let filteredGastos = gastosCompartidos.filter(gasto => {
+    if (filterMonth || filterYear) {
+      try {
+        const fecha = new Date(gasto.fecha);
+        const itemMonth = fecha.getMonth() + 1;
+        const itemYear = fecha.getFullYear();
+        
+        if (filterMonth && itemMonth !== parseInt(filterMonth)) return false;
+        if (filterYear && itemYear !== parseInt(filterYear)) return false;
+      } catch {
+        return false;
+      }
+    }
+    
+    if (filterTipo !== 'all' && gasto.categoria !== filterTipo) return false;
+    
+    return true;
+  });
+  
+  // Calcular totales para las 3 tarjetas
+  let totalYoDebo = 0;
+  let totalParejaDebe = 0;
+  let totalGeneral = 0;
+  
+  filteredGastos.forEach(gasto => {
+    const meta = parseSharedMeta(gasto.estado);
+
+    const monto = parseAmount(gasto.monto);
+    const porcentaje = parseAmount(gasto.porcentaje_tu) || 50;
+    
+    const miParte = monto * (porcentaje / 100);
+    const partePareja = monto - miParte;
+    
+    totalGeneral += monto;
+    totalYoDebo += miParte;
+    totalParejaDebe += partePareja;
+  });
+  
+  // Actualizar las 3 tarjetas
+  setText('youOwe', fmtMoney(totalYoDebo));
+  setText('owedToYou', fmtMoney(totalParejaDebe));
+  setText('sharedTotal', fmtMoney(totalGeneral));
+  
+  // Actualizar nombres de pareja
+  setText('partnerNameDisplay', APP_STATE.partner.email);
+  setText('partnerNameDisplay2', APP_STATE.partner.email);
+  
+  // Mostrar tabla de gastos compartidos
+  if (filteredGastos.length === 0) {
+    sharedList.innerHTML = `
+      <div class="p-6 text-center text-gray-500">
+        <i class="fas fa-users text-4xl mb-3"></i>
+        <p class="mb-3">No hay gastos compartidos registrados</p>
+        <button class="btn btn-accent btn-sm bg-primary text-white px-3 py-1 rounded text-sm hover:bg-teal-700" onclick="openSharedExpenseModal()">
+          <i class="fas fa-plus"></i> Agregar primer gasto compartido
+        </button>
       </div>`;
     return;
   }
+  
+  let html = `
+    <div class="overflow-x-auto">
+      <table class="w-full">
+        <thead class="bg-gray-50 dark:bg-gray-800">
+          <tr>
+            <th class="p-3 text-left">Fecha</th>
+            <th class="p-3 text-left">Descripción</th>
+            <th class="p-3 text-left">Categoría</th>
+            <th class="p-3 text-left">Total</th>
+            <th class="p-3 text-left">Yo pago</th>
+            <th class="p-3 text-left">Pareja paga</th>
+            <th class="p-3 text-left">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>`;
+  
+  filteredGastos.forEach(gasto => {
+    const fecha = formatDate(gasto.fecha);
+    const monto = parseAmount(gasto.monto);
+    const porcentaje = parseAmount(gasto.porcentaje_tu) || 50;
+    const meta = parseSharedMeta(gasto.estado);
+    const miParte = monto * (porcentaje / 100);
+    const partePareja = monto - miParte;
+    
+    // Determinar si el usuario es el creador
+    const isOwner = gasto.email_usuario === APP_STATE.user.email;
+    
+    html += `
+      <tr class="border-b border-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800">
+        <td class="p-3">${fecha}</td>
+        <td class="p-3 font-medium">
+          ${escapeHtml(gasto.descripcion || 'Gasto compartido')}
+          ${meta && String(meta.tipo).toLowerCase() === 'credit' ? `<div class="text-xs text-purple-600 mt-1">
+            <i class="fas fa-calendar-alt mr-1"></i> Cuota ${meta.cuota_actual || 1}/${meta.cuotas_totales || ''}${meta.monto_total ? ` • Total compra: ${fmtMoney(parseAmount(meta.monto_total))}` : ''}
+          </div>` : ''}
+        </td>
+        <td class="p-3">
+          <span class="badge badge-secondary px-2 py-1 rounded-full text-xs">${escapeHtml(gasto.categoria || 'General')}</span>
+        </td>
+        <td class="p-3 font-bold">${fmtMoney(monto)}</td>
+        <td class="p-3 font-semibold ${miParte > 0 ? 'text-yellow-600' : ''}">
+          ${fmtMoney(miParte)} (${porcentaje}%)
+        </td>
+        <td class="p-3 font-semibold ${partePareja > 0 ? 'text-blue-600' : ''}">
+          ${fmtMoney(partePareja)} (${100 - porcentaje}%)
+        </td>
+        <td class="p-3">
+          ${isOwner ? `
+          <div class="flex gap-1">
+            <button class="btn btn-sm btn-danger bg-red-100 text-red-700 px-2 py-1 rounded text-sm hover:bg-red-200" onclick="deleteSharedExpense('${gasto.id}')">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+          ` : '<span class="text-gray-400 text-sm">Recibido</span>'}
+        </td>
+      </tr>`;
+  });
+  
+  html += `</tbody></table></div>`;
+  sharedList.innerHTML = html;
+}
 
-  box.innerHTML = arr.slice(0,20).map(r=>{
-    const total = safeNum(r.total || r.monto || r.amount);
-    const creator = r.creatorEmail || r.fromEmail || r.userEmail;
-    const pctCreator = safeNum(r.porcentaje_creator ?? r.porcentaje_tu ?? 50);
-    const creatorShare = total*(pctCreator/100);
-    const partnerShare = total-creatorShare;
-    const mine = (creator===APP_STATE.user.email) ? creatorShare : partnerShare; // si el otro creó, mi parte es partnerShare
-    return `
-      <div class="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
-        <div class="min-w-0">
-          <div class="font-semibold text-gray-900 truncate">${escapeHtml(r.descripcion||'Gasto compartido')}</div>
-          <div class="text-xs text-gray-500 mt-1">${escapeHtml(fmtDate(r.fecha))} • Total ${fmtMoney(total)} • Mi parte ${fmtMoney(mine)}</div>
-        </div>
-        <div class="font-bold text-gray-900">${fmtMoney(total)}</div>
+// =========================================================
+// SECCIÓN INGRESOS
+// =========================================================
+
+async function loadIncomes() {
+  console.log('📥 Cargando ingresos...');
+  const list = $('#incomesList');
+  if (!list) return;
+  
+  try {
+    APP_STATE.data.ingresos = await APIService.leer('ingresos');
+  } catch (err) {
+    console.error('Error cargando ingresos:', err);
+  }
+  
+  let ingresos = APP_STATE.data.ingresos || [];
+  
+  // Aplicar filtros
+  const month = APP_STATE.filters.incomes.month;
+  const year = APP_STATE.filters.incomes.year;
+  
+  if (month || year) {
+    ingresos = ingresos.filter(item => {
+      try {
+        const fecha = new Date(item.fecha);
+        const itemMonth = fecha.getMonth() + 1;
+        const itemYear = fecha.getFullYear();
+        
+        if (month && itemMonth !== parseInt(month)) return false;
+        if (year && itemYear !== parseInt(year)) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+  
+  if (ingresos.length === 0) {
+    list.innerHTML = `
+      <div class="p-6 text-center text-gray-500">
+        <i class="fas fa-plus-circle text-4xl mb-3"></i>
+        <p class="mb-3">No hay ingresos registrados</p>
+        <button class="btn btn-accent btn-sm bg-primary text-white px-3 py-1 rounded text-sm hover:bg-teal-700" onclick="openIncomeModal()">
+          <i class="fas fa-plus"></i> Agregar primer ingreso
+        </button>
       </div>`;
+    return;
+  }
+  
+  let html = '';
+  ingresos.forEach(item => {
+    const fechaFormateada = formatDate(item.fecha);
+    const categoria = item.categoria || 'General';
+    const frecuenciaMap = {
+      'onetime': 'Único',
+      'weekly': 'Semanal',
+      'biweekly': 'Quincenal',
+      'monthly': 'Mensual',
+      'yearly': 'Anual'
+    };
+    const frecuencia = frecuenciaMap[item.frecuencia] || item.frecuencia;
+    
+    html += `
+      <div class="p-4 border-b border-gray-100 flex items-center justify-between gap-4 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold text-gray-900 truncate flex items-center gap-2">
+            <i class="fas fa-arrow-up text-green-500"></i>
+            ${escapeHtml(item.descripcion || 'Ingreso')}
+          </div>
+          <div class="text-xs text-gray-500 mt-1">
+            <span class="inline-flex items-center gap-1">
+              <i class="far fa-calendar"></i> ${escapeHtml(fechaFormateada)}
+            </span>
+            <span class="mx-2">•</span>
+            <span class="inline-flex items-center gap-1">
+              <i class="fas fa-tag"></i> ${escapeHtml(categoria)}
+            </span>
+            <span class="mx-2">•</span>
+            <span class="inline-flex items-center gap-1">
+              <i class="fas fa-redo"></i> ${escapeHtml(frecuencia)}
+            </span>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <div class="font-bold text-green-600 text-right text-lg">${fmtMoney(item.monto)}</div>
+          <div class="flex gap-1">
+            <button class="btn btn-sm btn-secondary bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm hover:bg-gray-300" onclick="editIncome('${item.id}')">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button class="btn btn-sm btn-danger bg-red-100 text-red-700 px-2 py-1 rounded text-sm hover:bg-red-200" onclick="deleteIncome('${item.id}')">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>`;
+  });
+  
+  list.innerHTML = html;
+}
+
+// =========================================================
+// SECCIÓN PROYECCIONES
+// =========================================================
+
+// =========================================================
+// SECCIÓN PROYECCIONES CON CUOTAS
+// =========================================================
+
+
+async function loadProjections() {
+  console.log('📅 Cargando proyecciones (estilo banco)...');
+
+  const tableBody = $('#projectionsTableBody');
+  if (!tableBody) return;
+
+  showLoading(true);
+
+  try {
+    const [gastos, gastosCompartidos, tarjetas] = await Promise.all([
+      APIService.leer('gastos'),
+      APIService.leer('gastos_compartidos', { __skipUserEmail: true }),
+      APIService.leer('tarjetas')
+    ]);
+
+    APP_STATE.data.gastos = gastos || [];
+    APP_STATE.data.gastos_compartidos = filterSharedForUser_(gastosCompartidos || [], APP_STATE.user.email);
+    APP_STATE.data.tarjetas = tarjetas || [];
+
+  } catch (err) {
+    console.error('Error cargando proyecciones:', err);
+    showLoading(false);
+    tableBody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-gray-500">No se pudieron cargar las proyecciones.</td></tr>`;
+    return;
+  }
+
+  const tipoFilter = APP_STATE.filters.projections.tipo || 'all';
+  const yearFilter = APP_STATE.filters.projections.year || '';
+  const monthFilter = APP_STATE.filters.projections.month || ''; // YYYY-MM o ''
+
+  const now = new Date();
+  const currentYM = toYM(now);
+
+  // Determinar meses a mostrar
+  let monthsToShow = [];
+  if (monthFilter) {
+    monthsToShow = [monthFilter];
+  } else if (yearFilter) {
+    const y = parseInt(yearFilter, 10);
+    if (!isNaN(y)) {
+      monthsToShow = Array.from({length:12}, (_,i)=> `${y}-${pad2(i+1)}`);
+    }
+  } else {
+    // por defecto: próximos 12 meses desde el actual
+    monthsToShow = Array.from({length:12}, (_,i)=> addMonthsToYM(currentYM, i));
+  }
+
+  // Preparar mapa de tarjetas por id
+  const cardsById = new Map((APP_STATE.data.tarjetas||[]).map(c => [String(c.id ?? c.tarjeta_id ?? ''), c]));
+
+  // Normalizar gastos (normales + compartidos)
+  const allRaw = [];
+
+  (APP_STATE.data.gastos || []).forEach(g => allRaw.push({ ...g, _source: 'gasto' }));
+  (APP_STATE.data.gastos_compartidos || []).forEach(g => allRaw.push({ ...g, _source: 'shared' }));
+
+  // Expandir a "pagos" (lo que efectivamente se paga por mes)
+  const payments = [];
+
+  for (const item of allRaw) {
+    const rawTipo = (item.tipo || '').toLowerCase();
+    const isShared = rawTipo === 'shared' || item._source === 'shared' || item.compartido === 'true' || item.porcentaje_tu;
+
+    // Tipo para filtro
+    const tipoParaFiltro = isShared ? 'shared' : (rawTipo || 'variable');
+
+    if (tipoFilter !== 'all') {
+      if (tipoFilter === 'fixed' && tipoParaFiltro !== 'fixed') continue;
+      if (tipoFilter === 'credit' && tipoParaFiltro !== 'credit') continue;
+      if (tipoFilter === 'shared' && tipoParaFiltro !== 'shared') continue;
+    }
+
+    const descripcion = item.descripcion || 'Gasto';
+    const categoria = item.categoria || 'General';
+
+    // Totales y partes
+    const totalBase = parseAmount(item.monto_total) || (parseAmount(item.monto) || 0) * (parseInt(item.cuotas_totales || item.cuotas || 1, 10) || 1);
+    let miParte = totalBase;
+    let parejaParte = 0;
+
+    if (isShared) {
+      const porcentajeTu = parseAmount(item.porcentaje_tu) || 50;
+      miParte = totalBase * (porcentajeTu / 100);
+      parejaParte = totalBase - miParte;
+    }
+
+    // Fecha base
+    const purchaseDate = item.fecha ? new Date(item.fecha) : new Date();
+
+    // Gasto tarjeta / crédito (con o sin cuotas)
+    if (tipoParaFiltro === 'credit') {
+      const cuotasTotales = parseInt(item.cuotas_totales || item.cuotas || 1, 10) || 1;
+      const montoTotal = parseAmount(item.monto_total) || (parseAmount(item.monto) || 0) * cuotasTotales;
+
+      const cardId = String(item.tarjeta_id || item.card_id || item.tarjetaId || '');
+      const card = cardsById.get(cardId);
+
+      // Si no hay tarjeta, lo tratamos como pago único en el mes de la fecha
+      if (!card) {
+        const ym = toYM(purchaseDate);
+        if (!monthsToShow.includes(ym)) continue;
+
+        payments.push({
+          descripcion,
+          categoria,
+          total: montoTotal,
+          mi_parte: miParte,
+          pareja: parejaParte,
+          tipo: 'Crédito',
+          fecha: purchaseDate,
+          observaciones: cuotasTotales > 1 ? `Cuota 1/${cuotasTotales}` : 'Pago único'
+        });
+        continue;
+      }
+
+      // Expandir cuotas: lo que "vence" cada mes
+      const sched = buildInstallmentSchedule({
+        purchaseDate,
+        card,
+        cuotasTotales,
+        montoTotal,
+        descripcion,
+        baseItem: { categoria },
+        miParte,
+        parejaParte
+      });
+
+      for (const p of sched) {
+        const ymDue = toYM(p.dueDate);
+        if (!monthsToShow.includes(ymDue)) continue;
+
+        const obs = [
+          card.banco ? `${card.banco} ****${card.ultimos_4 || ''}` : `Tarjeta ****${card.ultimos_4 || ''}`,
+          `Cierra: ${formatDate(p.closeDate)}`,
+          `Vence: ${formatDate(p.dueDate)}`,
+          p.observaciones_extra
+        ].filter(Boolean).join(' • ');
+
+        payments.push({
+          descripcion: p.descripcion,
+          categoria,
+          total: p.total,
+          mi_parte: p.mi_parte,
+          pareja: p.pareja,
+          tipo: 'Tarjeta',
+          fecha: p.dueDate,
+          observaciones: obs
+        });
+      }
+
+      continue;
+    }
+
+    // Gasto fijo: se proyecta mes a mes (por defecto, 12 meses o el año seleccionado)
+    if (tipoParaFiltro === 'fixed') {
+      const day = purchaseDate.getDate();
+      for (const ym of monthsToShow) {
+        const [y,m] = ym.split('-').map(Number);
+        const payDate = makeDate(y, m, day);
+        // si el fijo empezó en el futuro, respetarlo
+        if (payDate.getTime() < purchaseDate.getTime()) continue;
+
+        payments.push({
+          descripcion,
+          categoria,
+          total: totalBase,
+          mi_parte: miParte,
+          pareja: parejaParte,
+          tipo: isShared ? 'Compartido' : 'Fijo',
+          fecha: payDate,
+          observaciones: isShared ? `Compartido (${(parseAmount(item.porcentaje_tu)||50)}% - ${(100-(parseAmount(item.porcentaje_tu)||50))}%)` : 'Mensual'
+        });
+      }
+      continue;
+    }
+
+    // Variable / compartido de una sola vez: entra en el mes de la fecha
+    {
+      const ym = toYM(purchaseDate);
+      if (!monthsToShow.includes(ym)) continue;
+
+      payments.push({
+        descripcion,
+        categoria,
+        total: totalBase,
+        mi_parte: miParte,
+        pareja: parejaParte,
+        tipo: isShared ? 'Compartido' : 'Variable',
+        fecha: purchaseDate,
+        observaciones: isShared ? `Compartido (${(parseAmount(item.porcentaje_tu)||50)}% - ${(100-(parseAmount(item.porcentaje_tu)||50))}%)` : ''
+      });
+    }
+  }
+
+  // Orden por fecha asc
+  payments.sort((a,b) => (a.fecha?.getTime?.() || 0) - (b.fecha?.getTime?.() || 0));
+
+  // Totales del mes/periodo seleccionado
+  const totalPagar = payments.reduce((acc, x) => acc + (parseAmount(x.total) || 0), 0);
+  const totalMiParte = payments.reduce((acc, x) => acc + (parseAmount(x.mi_parte) || 0), 0);
+  const totalPareja = payments.reduce((acc, x) => acc + (parseAmount(x.pareja) || 0), 0);
+
+  $('#projectionTotal') && ($('#projectionTotal').textContent = fmtMoney(totalPagar));
+  $('#projectionYourPart') && ($('#projectionYourPart').textContent = fmtMoney(totalMiParte));
+  $('#projectionPartnerPart') && ($('#projectionPartnerPart').textContent = fmtMoney(totalPareja));
+
+  // Render tabla
+  if (payments.length === 0) {
+    tableBody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-gray-500">No hay pagos programados para el período seleccionado.</td></tr>`;
+    showLoading(false);
+    return;
+  }
+
+  tableBody.innerHTML = payments.map(p => {
+    return `
+      <tr class="border-b border-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+        <td class="p-3">
+          <div class="font-semibold text-gray-900">${escapeHTML(p.descripcion || '')}</div>
+          <div class="text-xs text-gray-500">${escapeHTML(p.categoria || '')}</div>
+        </td>
+        <td class="p-3">${formatDate(p.fecha)}</td>
+        <td class="p-3 font-semibold">${fmtMoney(p.total)}</td>
+        <td class="p-3">${fmtMoney(p.mi_parte)}</td>
+        <td class="p-3">${fmtMoney(p.pareja)}</td>
+        <td class="p-3">${escapeHTML(p.tipo || '')}</td>
+        <td class="p-3 text-sm text-gray-600">${escapeHTML(p.observaciones || '')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  showLoading(false);
+}
+
+// =========================================================
+// MODALES Y FORMULARIOS
+// =========================================================
+
+function openIncomeModal(incomeId = null) {
+  const modal = $('#incomeModal');
+  const title = $('#incomeModalTitle');
+  const form = $('#incomeForm');
+  
+  if (!modal || !form) return;
+  
+  if (incomeId) {
+    const income = APP_STATE.data.ingresos.find(i => i.id === incomeId);
+    if (income) {
+      title.textContent = 'Editar Ingreso';
+      form.querySelector('[name="id"]').value = income.id;
+      form.querySelector('[name="descripcion"]').value = income.descripcion || '';
+      form.querySelector('[name="monto"]').value = income.monto || '';
+      form.querySelector('[name="fecha"]').value = income.fecha ? income.fecha.split('T')[0] : '';
+      form.querySelector('[name="frecuencia"]').value = income.frecuencia || 'monthly';
+      form.querySelector('[name="categoria"]').value = income.categoria || '';
+    }
+  } else {
+    title.textContent = 'Nuevo Ingreso';
+    form.reset();
+    refreshSharedWithOptions_();
+    form.querySelector('[name="id"]').value = '';
+    form.querySelector('[name="fecha"]').value = new Date().toISOString().split('T')[0];
+    form.querySelector('[name="frecuencia"]').value = 'monthly';
+  }
+  
+  modal.classList.add('active');
+}
+
+function openExpenseModal(expenseId = null) {
+  const modal = $('#expenseModal');
+  const title = $('#expenseModalTitle');
+  const form = $('#expenseForm');
+  
+  if (!modal || !form) return;
+
+  refreshSharedWithOptions_();
+  
+  // Cargar tarjetas en el select
+  const cardSelect = $('#expenseCardSelect');
+  if (cardSelect) {
+    const tarjetas = APP_STATE.data.tarjetas || [];
+    let html = '<option value="">Seleccionar tarjeta</option>';
+    tarjetas.forEach(tarjeta => {
+      html += `<option value="${tarjeta.id}">${escapeHtml(tarjeta.banco)} **** ${escapeHtml(tarjeta.ultimos_4)}</option>`;
+    });
+    cardSelect.innerHTML = html;
+  }
+  
+  if (expenseId) {
+    const expense = APP_STATE.data.gastos.find(g => g.id === expenseId);
+    if (expense) {
+      title.textContent = 'Editar Gasto';
+      form.querySelector('[name="id"]').value = expense.id;
+      form.querySelector('[name="descripcion"]').value = expense.descripcion || '';
+      form.querySelector('[name="monto"]').value = expense.monto || '';
+      form.querySelector('[name="fecha"]').value = expense.fecha ? expense.fecha.split('T')[0] : '';
+      form.querySelector('[name="categoria"]').value = expense.categoria || '';
+      form.querySelector('[name="tipo"]').value = expense.tipo || 'variable';
+      form.querySelector('[name="metodo_pago"]').value = expense.metodo_pago || 'cash';
+      
+      if (expense.tipo === 'credit') {
+        $('#creditCardFields').classList.remove('hidden');
+        if (expense.tarjeta_id) form.querySelector('[name="tarjeta_id"]').value = expense.tarjeta_id;
+        if (expense.cuotas) form.querySelector('[name="cuotas"]').value = expense.cuotas;
+      }
+      
+      if (expense.compartido === 'true' || expense.porcentaje_tu) {
+    const sharedCheck = $('#isSharedCheck');
+    if (sharedCheck) sharedCheck.checked = true;
+        $('#sharedFields').classList.remove('hidden');
+        if (expense.porcentaje_tu) {
+          form.querySelector('[name="porcentaje_tu"]').value = expense.porcentaje_tu;
+        }
+      }
+    }
+  } else {
+    title.textContent = 'Nuevo Gasto';
+    form.reset();
+    form.querySelector('[name="id"]').value = '';
+    form.querySelector('[name="fecha"]').value = new Date().toISOString().split('T')[0];
+    form.querySelector('[name="tipo"]').value = 'variable';
+    form.querySelector('[name="metodo_pago"]').value = 'cash';
+    $('#creditCardFields').classList.add('hidden');
+    const sharedCheck = $('#isSharedCheck');
+    if (sharedCheck) sharedCheck.checked = false;
+    $('#sharedFields').classList.add('hidden');
+  }
+  
+  modal.classList.add('active');
+}
+
+function openSharedExpenseModal() {
+  openExpenseModal();
+  
+  setTimeout(() => {
+    const sharedCheck = $('#isSharedCheck');
+    if (sharedCheck) sharedCheck.checked = true;
+    $('#sharedFields').classList.remove('hidden');
+  }, 100);
+}
+
+function openCardModal(cardId = null) {
+  const modal = $('#cardModal');
+  const form = $('#cardForm');
+  
+  if (!modal || !form) return;
+  
+  if (cardId) {
+    const card = APP_STATE.data.tarjetas.find(c => c.id === cardId);
+    if (card) {
+      form.querySelector('[name="id"]').value = card.id;
+      form.querySelector('[name="banco"]').value = card.banco || '';
+      form.querySelector('[name="ultimos_4"]').value = card.ultimos_4 || '';
+      form.querySelector('[name="limite_credito"]').value = card.limite_credito || '';
+      form.querySelector('[name="dia_cierre"]').value = card.dia_cierre || 15;
+      form.querySelector('[name="dia_vencimiento"]').value = card.dia_vencimiento || 5;
+      form.querySelector('[name="tipo"]').value = card.tipo || 'visa';
+    }
+  } else {
+    form.reset();
+    form.querySelector('[name="id"]').value = '';
+    form.querySelector('[name="dia_cierre"]').value = 15;
+    form.querySelector('[name="dia_vencimiento"]').value = 5;
+    form.querySelector('[name="tipo"]').value = 'visa';
+  }
+  
+  modal.classList.add('active');
+}
+
+// ==============================
+// Cierres por mes (Tarjetas)
+// ==============================
+function openCyclesModal() {
+  const modal = $('#cyclesModal');
+  if (!modal) return;
+
+  // llenar tarjetas
+  const sel = $('#cycleCardSelect');
+  if (sel) {
+    const cards = APP_STATE.data.tarjetas || [];
+    sel.innerHTML = `<option value="">Seleccionar tarjeta</option>` + cards.map(c => {
+      const id = c.id ?? c.tarjeta_id ?? '';
+      const label = `${c.banco || 'Banco'} • ${c.tipo ? String(c.tipo).toUpperCase() : ''} • ****${c.ultimos_4 || ''}`;
+      return `<option value="${id}">${escapeHTML(label)}</option>`;
+    }).join('');
+  }
+
+  // llenar meses (24 meses desde el mes anterior al actual)
+  const monthSel = $('#cycleMonthSelect');
+  if (monthSel) {
+    const now = new Date();
+    const startYM = addMonthsToYM(toYM(now), -1);
+    let html = '';
+    for (let i = 0; i < 24; i++) {
+      const ym = addMonthsToYM(startYM, i);
+      html += `<option value="${ym}">${ymToLabel(ym)}</option>`;
+    }
+    monthSel.innerHTML = html;
+    monthSel.value = toYM(now);
+  }
+
+  // wire internos (una sola vez)
+  if (!modal.dataset.wired) {
+    modal.dataset.wired = '1';
+
+    $('#cycleCardSelect')?.addEventListener('change', syncCycleFormFromSelection);
+    $('#cycleMonthSelect')?.addEventListener('change', syncCycleFormFromSelection);
+
+    $('#saveCycleBtn')?.addEventListener('click', () => {
+      const cardId = $('#cycleCardSelect')?.value;
+      const ym = $('#cycleMonthSelect')?.value;
+      const close = $('#cycleCloseDate')?.value;
+      const due = $('#cycleDueDate')?.value;
+      if (!cardId || !ym) return showAlert('Elegí tarjeta y mes', 'warning');
+      if (!close || !due) return showAlert('Completá cierre y vencimiento', 'warning');
+
+      const overrides = getCycleOverrides();
+      overrides[cardId] = overrides[cardId] || {};
+      overrides[cardId][ym] = { close, due };
+      saveCycleOverrides(overrides);
+
+      showAlert('Cierre del mes guardado', 'success');
+      renderCycleOverridesList(cardId);
+      loadProjections(); // refrescar proyecciones
+    });
+
+    $('#clearCycleBtn')?.addEventListener('click', () => {
+      const cardId = $('#cycleCardSelect')?.value;
+      const ym = $('#cycleMonthSelect')?.value;
+      if (!cardId || !ym) return showAlert('Elegí tarjeta y mes', 'warning');
+
+      const overrides = getCycleOverrides();
+      if (overrides?.[cardId]?.[ym]) {
+        delete overrides[cardId][ym];
+        if (Object.keys(overrides[cardId]).length === 0) delete overrides[cardId];
+        saveCycleOverrides(overrides);
+        showAlert('Volviste a los valores por defecto', 'info');
+      } else {
+        showAlert('Ese mes no tenía override guardado', 'info');
+      }
+      syncCycleFormFromSelection();
+      renderCycleOverridesList(cardId);
+      loadProjections();
+    });
+  }
+
+  // set defaults based on current selection
+  syncCycleFormFromSelection();
+
+  modal.classList.add('active');
+}
+
+function syncCycleFormFromSelection() {
+  const cardId = $('#cycleCardSelect')?.value;
+  const ym = $('#cycleMonthSelect')?.value;
+
+  const closeInput = $('#cycleCloseDate');
+  const dueInput = $('#cycleDueDate');
+
+  if (!closeInput || !dueInput) return;
+
+  // si no hay tarjeta, limpiar
+  if (!cardId || !ym) {
+    closeInput.value = '';
+    dueInput.value = '';
+    $('#cycleOverridesList').innerHTML = `<div class="p-4 text-sm text-gray-500">Seleccioná una tarjeta para ver/editar cierres.</div>`;
+    return;
+  }
+
+  const card = (APP_STATE.data.tarjetas || []).find(c => String(c.id ?? c.tarjeta_id ?? '') === String(cardId));
+  if (!card) return;
+
+  const overrides = getCycleOverrides();
+  const ov = overrides?.[String(cardId)]?.[ym];
+
+  if (ov?.close && ov?.due) {
+    closeInput.value = ov.close;
+    dueInput.value = ov.due;
+  } else {
+    const { closeDate, dueDate } = getCloseInfoForMonth(card, ym);
+    closeInput.value = closeDate.toISOString().slice(0,10);
+    dueInput.value = dueDate.toISOString().slice(0,10);
+  }
+
+  renderCycleOverridesList(String(cardId));
+}
+
+function renderCycleOverridesList(cardId) {
+  const box = $('#cycleOverridesList');
+  if (!box) return;
+
+  const overrides = getCycleOverrides();
+  const months = overrides?.[cardId] ? Object.keys(overrides[cardId]).sort() : [];
+
+  if (months.length === 0) {
+    box.innerHTML = `<div class="p-4 text-sm text-gray-500">No hay cierres personalizados guardados para esta tarjeta.</div>`;
+    return;
+  }
+
+  box.innerHTML = months.map(ym => {
+    const item = overrides[cardId][ym];
+    const close = item?.close || '';
+    const due = item?.due || '';
+    return `
+      <div class="cycle-row">
+        <div class="flex-1">
+          <div class="title">${ymToLabel(ym)}</div>
+          <div class="meta">Cierre: ${formatDate(close)} • Vence: ${formatDate(due)}</div>
+        </div>
+        <div class="actions flex gap-2">
+          <button class="btn btn-secondary px-3 py-1 rounded border border-gray-300 hover:bg-gray-50" type="button"
+            onclick="(function(){ try{ document.getElementById('cycleMonthSelect').value='${ym}'; syncCycleFormFromSelection(); }catch(e){} })()">
+            Editar
+          </button>
+          <button class="btn btn-danger px-3 py-1 rounded border border-red-200 text-red-700 hover:bg-red-50" type="button"
+            onclick="(function(){ try{ const o=getCycleOverrides(); delete o['${cardId}']['${ym}']; if(Object.keys(o['${cardId}']).length===0) delete o['${cardId}']; saveCycleOverrides(o); renderCycleOverridesList('${cardId}'); syncCycleFormFromSelection(); loadProjections(); }catch(e){} })()">
+            Borrar
+          </button>
+        </div>
+      </div>
+    `;
   }).join('');
 }
 
-// ===============================
-// Cards section (simple CRUD básico)
-// ===============================
-function renderCards() {
-  const box = $('#cardsList');
-  if (!box) return;
-  const arr = (APP_STATE.data.tarjetas||[]).slice();
-  if (!arr.length) {
+function openInviteModal() {
+  $('#inviteModal')?.classList.add('active');
+}
+
+function openAcceptInviteModal() {
+  $('#acceptInviteModal')?.classList.add('active');
+  loadPendingInvites().catch(err => console.error('Error cargando invitaciones:', err));
+}
+
+async function loadPendingInvites() {
+  const modal = $('#acceptInviteModal');
+  const body = modal?.querySelector('.modal-body');
+  if (!body) return;
+
+  // contenedor dinámico
+  let box = body.querySelector('#pendingInvitesBox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'pendingInvitesBox';
+    box.className = 'mt-4';
+    body.appendChild(box);
+  }
+
+  // limpiar
+  box.innerHTML = '<div class="text-sm text-gray-500">Buscando invitaciones pendientes...</div>';
+
+  if (!APP_STATE.user?.email) {
+    box.innerHTML = '<div class="text-sm text-red-600">No se pudo identificar tu sesión.</div>';
+    return;
+  }
+
+  try {
+    const res = await APIService.leer('invitaciones', {
+      email_to: normEmail(APP_STATE.user.email),
+      estado: 'pendiente'
+    });
+
+    const list = Array.isArray(res) ? res : (res?.datos || []);
+    if (!list || list.length === 0) {
+      box.innerHTML = '<div class="text-sm text-gray-500">No tenés invitaciones pendientes.</div>';
+      return;
+    }
+
     box.innerHTML = `
+      <div class="text-sm font-semibold text-gray-800 mb-2">Invitaciones pendientes</div>
+      <div class="space-y-2">
+        ${list.map(inv => `
+          <div class="flex items-center justify-between border rounded-lg p-3 bg-gray-50">
+            <div class="text-sm">
+              <div class="text-gray-900"><b>De:</b> ${escapeHTML(inv.email_from || '')}</div>
+              <div class="text-gray-600"><b>ID:</b> ${escapeHTML(inv.id || '')}</div>
+            </div>
+            <button class="btn btn-primary btn-sm" data-accept-invite="${escapeHTML(inv.id || '')}">
+              Aceptar
+            </button>
+          </div>
+        `).join('')}
+      </div>
+      <div class="text-xs text-gray-500 mt-2">Tip: si preferís, también podés pegar el ID en el campo de arriba.</div>
+    `;
+
+    // event delegation dentro del modal
+    box.querySelectorAll('[data-accept-invite]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-accept-invite');
+        if (id) await acceptInviteById(id);
+      });
+    });
+
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = '<div class="text-sm text-red-600">Error cargando invitaciones.</div>';
+  }
+}
+
+async function acceptInviteById(invitationId) {
+  if (!invitationId) return;
+  showLoading(true);
+  try {
+    const result = await APIService.aceptarInvitacion(invitationId);
+    if (result.success) {
+      showAlert('¡Pareja vinculada exitosamente!', 'success');
+      closeModal('acceptInviteModal');
+      await reloadData();
+      await loadSharedSection();
+    } else {
+      showAlert(result.message || 'Error al aceptar la invitación', 'danger');
+    }
+  } catch (err) {
+    console.error('Error aceptando invitación:', err);
+    showAlert('Error al aceptar la invitación', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+
+
+async function saveIncome() {
+  const form = $('#incomeForm');
+  if (!form) return;
+  if (incomeSaveInFlight) return;
+  incomeSaveInFlight = true;
+  const btn = $('#saveIncomeBtn');
+  if (btn) btn.disabled = true;
+  
+  showLoading(true);
+  
+  const formData = new FormData(form);
+  const incomeData = {
+    descripcion: formData.get('descripcion'),
+    monto: formData.get('monto'),
+    frecuencia: formData.get('frecuencia'),
+    fecha: formData.get('fecha'),
+    categoria: formData.get('categoria')
+  };
+  
+  const incomeId = formData.get('id');
+  
+  try {
+    let result;
+    if (incomeId) {
+      result = await APIService.actualizar('ingresos', incomeId, incomeData);
+    } else {
+      result = await APIService.crear('ingresos', incomeData);
+    }
+    
+    if (result.success) {
+      showAlert('Ingreso guardado exitosamente', 'success');
+      closeModal('incomeModal');
+      await reloadData();
+      loadIncomes();
+    } else {
+      showAlert(result.message || 'Error al guardar el ingreso', 'danger');
+    }
+  } catch (err) {
+    console.error('Error guardando ingreso:', err);
+    showAlert('Error al guardar el ingreso', 'danger');
+  } finally {
+    showLoading(false);
+    const btn2 = $('#saveIncomeBtn');
+    if (btn2) btn2.disabled = false;
+    incomeSaveInFlight = false;
+  }
+}
+
+async function saveExpense() {
+  const form = $('#expenseForm');
+  if (!form) return;
+  if (expenseSaveInFlight) return;
+  expenseSaveInFlight = true;
+  const btn = $('#saveExpenseBtn');
+  if (btn) btn.disabled = true;
+  
+  showLoading(true);
+  
+  const formData = new FormData(form);
+  const descripcion = formData.get('descripcion');
+  const montoTotal = parseFloat(formData.get('monto')) || 0;
+  const fecha = formData.get('fecha');
+  const categoria = formData.get('categoria');
+  const tipo = formData.get('tipo');
+  const metodo_pago = formData.get('metodo_pago');
+  const tarjeta_id = formData.get('tarjeta_id');
+  const cuotas = parseInt(formData.get('cuotas')) || 1;
+  const isShared = formData.get('compartido') === 'on';
+  const porcentaje_tu = isShared ? (parseFloat(formData.get('porcentaje_tu')) || 50) : 100;
+  
+  const expenseId = formData.get('id');
+  
+  try {
+    let result;
+    
+    if (expenseId) {
+      // Editar gasto existente (simplificado por ahora)
+      const expenseData = {
+        descripcion,
+        monto: montoTotal,
+        fecha,
+        categoria,
+        tipo,
+        metodo_pago,
+        tarjeta_id: tipo === 'credit' ? tarjeta_id : '',
+        cuotas: tipo === 'credit' ? cuotas : ''
+      };
+      
+      if (isShared) {
+        expenseData.compartido = 'true';
+        expenseData.porcentaje_tu = porcentaje_tu;
+        result = await APIService.actualizar('gastos_compartidos', expenseId, expenseData);
+      } else {
+        result = await APIService.actualizar('gastos', expenseId, expenseData);
+      }
+      
+    } else {
+      // NUEVO GASTO
+      
+      // Si es gasto a crédito con cuotas > 1
+      if (tipo === 'credit' && cuotas > 1) {
+        const cuotaMensual = montoTotal / cuotas;
+        const createdIds = [];
+        
+        // Crear un gasto por cada cuota
+        const fechaBase = new Date(fecha);
+        
+        for (let i = 0; i < cuotas; i++) {
+          const fechaCuota = new Date(fechaBase);
+          fechaCuota.setMonth(fechaCuota.getMonth() + i);
+          const fechaCuotaStr = fechaCuota.toISOString().split('T')[0];
+          
+          const expenseData = {
+            descripcion: `${descripcion}`,
+            monto: cuotaMensual,
+            fecha: fechaCuotaStr,
+            categoria,
+            tipo: 'credit',
+            metodo_pago,
+            tarjeta_id,
+            cuotas: 1, // Cada registro es una cuota individual
+            cuota_actual: i + 1,
+            cuotas_totales: cuotas,
+            monto_total: montoTotal, // Guardar el monto total original
+            es_cuota: 'true'
+          };
+          
+          if (isShared) {
+            expenseData.compartido = 'true';
+            expenseData.porcentaje_tu = porcentaje_tu;
+
+            const partnerEmail = getPartnerEmail();
+            if (!partnerEmail) {
+              showAlert('Primero debes vincular una pareja para registrar gastos compartidos.', 'warning');
+              break;
+            }
+            expenseData.email_pareja = partnerEmail;
+
+            // Guardar metadata (crédito/cuotas/tarjeta) dentro de "estado"
+            expenseData.estado = buildSharedMeta({
+              tipo: 'credit',
+              metodo_pago: metodo_pago || 'credit',
+              tarjeta_id: tarjeta_id || '',
+              cuota_actual: i + 1,
+              cuotas_totales: cuotas,
+              monto_total: montoTotal,
+              es_cuota: true
+            });
+
+            // Para gastos compartidos a crédito: crear en GASTOS_COMPARTIDOS
+            const sharedResult = await APIService.crear('gastos_compartidos', expenseData);
+            if (sharedResult.success) createdIds.push(sharedResult.id);
+
+            // Crear espejo para que la otra persona lo vea en su sesión (y quede "balanceado")
+            if (partnerEmail) {
+              const mirror = { ...expenseData };
+              delete mirror.id;
+              mirror.email_pareja = APP_STATE.user.email;
+              mirror.porcentaje_tu = (100 - (porcentaje_tu || 50));
+              await APIService.callAPI('crear', { tabla: 'gastos_compartidos', userEmail: partnerEmail, ...mirror });
+            }
+
+          } else {
+            // Gasto normal a crédito
+            const gastoResult = await APIService.crear('gastos', expenseData);
+            if (gastoResult.success) createdIds.push(gastoResult.id);
+          }
+        }
+        
+        result = { 
+          success: true, 
+          message: `Gasto creado en ${cuotas} cuotas de ${fmtMoney(cuotaMensual)} cada una`,
+          ids: createdIds 
+        };
+        
+      } else {
+        // GASTO SIN CUOTAS (o 1 cuota)
+        const expenseData = {
+          descripcion,
+          monto: montoTotal,
+          fecha,
+          categoria,
+          tipo,
+          metodo_pago,
+          tarjeta_id: tipo === 'credit' ? tarjeta_id : '',
+          cuotas: tipo === 'credit' ? cuotas : '',
+          cuota_actual: 1,
+          cuotas_totales: cuotas,
+          monto_total: montoTotal,
+          es_cuota: cuotas > 1 ? 'true' : 'false'
+        };
+        
+        if (isShared) {
+          expenseData.compartido = 'true';
+          expenseData.porcentaje_tu = porcentaje_tu;
+
+          const partnerEmail = getPartnerEmail();
+          if (!partnerEmail) {
+            showAlert('Primero debes vincular una pareja para registrar gastos compartidos.', 'warning');
+            result = { success: false, message: 'No hay pareja vinculada' };
+          } else {
+            expenseData.email_pareja = partnerEmail;
+
+            // Guardar metadata en "estado" (para que el frontend sepa si es crédito/cuotas)
+            const meta = {
+              tipo: tipo,
+              metodo_pago: metodo_pago || (tipo === 'credit' ? 'credit' : 'cash'),
+              tarjeta_id: (tipo === 'credit' ? (tarjeta_id || '') : ''),
+              cuota_actual: 1,
+              cuotas_totales: cuotas || 1,
+              monto_total: montoTotal,
+              es_cuota: (tipo === 'credit' && (cuotas || 1) > 1)
+            };
+            expenseData.estado = buildSharedMeta(meta);
+
+            // Gasto compartido: crear en GASTOS_COMPARTIDOS
+            const sharedResult = await APIService.crear('gastos_compartidos', expenseData);
+            result = sharedResult;
+
+            // Crear espejo para que la otra persona lo vea en su sesión
+            if (partnerEmail) {
+              const mirror = { ...expenseData };
+              delete mirror.id;
+              mirror.email_pareja = APP_STATE.user.email;
+              mirror.porcentaje_tu = (100 - (porcentaje_tu || 50));
+              await APIService.callAPI('crear', { tabla: 'gastos_compartidos', userEmail: partnerEmail, ...mirror });
+            }
+          }
+
+        } else {
+          // Gasto normal
+          result = await APIService.crear('gastos', expenseData);
+        }
+      }
+    }
+    
+    if (result.success) {
+      showAlert(result.message, 'success');
+      closeModal('expenseModal');
+      await reloadData();
+      
+      // Actualizar la sección correspondiente
+      if (APP_STATE.currentSection === 'expenses') {
+        loadExpenses();
+      } else if (APP_STATE.currentSection === 'shared') {
+        loadSharedSection();
+      } else if (APP_STATE.currentSection === 'projections') {
+        loadProjections();
+      }
+    } else {
+      showAlert(result.message || 'Error al guardar el gasto', 'danger');
+    }
+  } catch (err) {
+    console.error('Error guardando gasto:', err);
+    showAlert('Error al guardar el gasto', 'danger');
+  } finally {
+    showLoading(false);
+    const btn2 = $('#saveExpenseBtn');
+    if (btn2) btn2.disabled = false;
+    expenseSaveInFlight = false;
+  }
+}
+
+
+async function saveCard() {
+  const form = $('#cardForm');
+  if (!form) return;
+
+  showLoading(true);
+
+  const formData = new FormData(form);
+  const cardData = {
+    banco: (formData.get('banco') || '').toString().trim(),
+    ultimos_4: (formData.get('ultimos_4') || '').toString().trim(),
+    limite_credito: toNumber(formData.get('limite_credito')),
+    dia_cierre: parseInt(formData.get('dia_cierre') || '15', 10),
+    dia_vencimiento: parseInt(formData.get('dia_vencimiento') || '5', 10),
+    tipo: (formData.get('tipo') || 'visa').toString()
+  };
+
+  // Validaciones mínimas
+  if (!cardData.banco) {
+    showAlert('Indicá el banco', 'warning');
+    showLoading(false);
+    return;
+  }
+  if (!/^[0-9]{4}$/.test(cardData.ultimos_4)) {
+    showAlert('Los "últimos 4" deben ser 4 dígitos', 'warning');
+    showLoading(false);
+    return;
+  }
+  if (!(cardData.dia_cierre >= 1 && cardData.dia_cierre <= 31)) {
+    showAlert('Día de cierre inválido (1 a 31)', 'warning');
+    showLoading(false);
+    return;
+  }
+  if (!(cardData.dia_vencimiento >= 1 && cardData.dia_vencimiento <= 31)) {
+    showAlert('Día de vencimiento inválido (1 a 31)', 'warning');
+    showLoading(false);
+    return;
+  }
+
+  const cardId = formData.get('id');
+
+  try {
+    let result;
+    if (cardId) {
+      result = await APIService.actualizar('tarjetas', cardId, cardData);
+    } else {
+      result = await APIService.crear('tarjetas', cardData);
+    }
+
+    if (result.success) {
+      showAlert('Tarjeta guardada exitosamente', 'success');
+      closeModal('cardModal');
+      await reloadData();
+      loadCards();
+      // si estás en proyecciones, refresca también
+      if (APP_STATE.currentSection === 'projections') {
+        loadProjections();
+      }
+    } else {
+      showAlert(result.message || 'Error al guardar la tarjeta', 'error');
+    }
+  } catch (err) {
+    console.error(err);
+    showAlert('Error al guardar la tarjeta', 'error');
+  } finally {
+    showLoading(false);
+  }
+}
+
+
+
+async function sendInvite() {
+  const email = $('#partnerEmail')?.value?.trim();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showAlert('Ingresa un email válido', 'warning');
+    return;
+  }
+  if (!APP_STATE.user?.email) {
+    showAlert('No se pudo identificar tu sesión. Cierra sesión e ingresa de nuevo.', 'danger');
+    return;
+  }
+  if (normEmail(email) === normEmail(APP_STATE.user.email)) {
+    showAlert('No puedes invitar tu propio email', 'warning');
+    return;
+  }
+
+  showLoading(true);
+
+  try {
+    // ⚠️ Code.gs NO autocompleta id/email_from/código en invitaciones.
+    const invitationId = 'inv_' + (crypto?.randomUUID ? crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(16).slice(2)));
+    const codigo = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const now = new Date().toISOString();
+
+    const payload = {
+      id: invitationId,
+      email_from: normEmail(APP_STATE.user.email),
+      email_to: normEmail(email),
+      codigo,
+      estado: 'pendiente',
+      creado_en: now,
+      aceptado_en: ''
+    };
+
+    const result = await APIService.crearInvitacion(payload);
+
+    if (result.success) {
+      showAlert(`Invitación enviada a ${email}. Código: ${codigo} | ID: ${invitationId}`, 'success');
+      closeModal('inviteModal');
+    } else {
+      showAlert(result.message || 'Error al enviar la invitación', 'danger');
+    }
+  } catch (err) {
+    console.error('Error enviando invitación:', err);
+    showAlert('Error al enviar la invitación', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+
+async function acceptInvite() {
+  const raw = ($('#inviteCode')?.value || '').toString().trim();
+  if (!raw) {
+    showAlert('Ingresa el código de invitación.', 'warning');
+    return;
+  }
+
+  showLoading(true);
+  try {
+    let inv = null;
+
+    if (/^inv_[\w-]+$/i.test(raw)) {
+      const list = await APIService.leer('invitaciones', { id: raw });
+      inv = (list && list.length) ? list[0] : null;
+    } else {
+      const myEmail = normEmail(APP_STATE.user?.email || '');
+      const list = await APIService.leer('invitaciones', {
+        estado: 'pendiente',
+        codigo: raw,
+        email_from: myEmail
+      });
+      inv = (list && list.length) ? list[list.length - 1] : null;
+    }
+
+    if (!inv) {
+      showAlert('No se encontró una invitación pendiente con ese código (enviada por tu cuenta).', 'warning');
+      return;
+    }
+
+    const emailFrom = normEmail(inv.email_from || '');
+    const emailTo = normEmail(inv.email_to || '');
+    const estado = String(inv.estado || '').toLowerCase();
+
+    if (estado !== 'pendiente') {
+      showAlert('Esa invitación ya no está pendiente.', 'info');
+      return;
+    }
+
+    const myEmail = normEmail(APP_STATE.user?.email || '');
+    if (emailFrom && myEmail && emailFrom !== myEmail) {
+      showAlert('Este código no corresponde a una invitación enviada por tu cuenta.', 'danger');
+      return;
+    }
+
+    if (!emailTo) {
+      showAlert('La invitación no tiene email_to. Revisa la invitación en la hoja.', 'danger');
+      return;
+    }
+
+    // Crear usuario invitado si no existe (password inicial = código)
+    try {
+      await APIService.register(emailTo, raw, '', 'ARS');
+    } catch (_) {}
+
+    // Aceptar invitación en nombre del email invitado
+    const result = await APIService.callAPI('aceptar_invitacion', { invitationId: inv.id, userEmail: emailTo });
+
+    if (result && result.success) {
+      showAlert('¡Pareja vinculada exitosamente!', 'success');
+      closeModal('acceptInviteModal');
+      await reloadData();
+      await loadSharedSection();
+    } else {
+      showAlert((result && result.message) ? result.message : 'Error al aceptar la invitación', 'danger');
+    }
+  } catch (err) {
+    console.error('Error aceptando invitación:', err);
+    showAlert('Error al aceptar la invitación', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+
+
+async function deleteIncome(incomeId) {
+  if (!confirm('¿Eliminar este ingreso?')) return;
+  
+  showLoading(true);
+  
+  try {
+    const result = await APIService.eliminar('ingreso', incomeId);
+    if (result.success) {
+      showAlert('Ingreso eliminado', 'success');
+      await reloadData();
+      loadIncomes();
+    } else {
+      showAlert(result.message || 'Error al eliminar el ingreso', 'danger');
+    }
+  } catch (err) {
+    console.error('Error eliminando ingreso:', err);
+    showAlert('Error al eliminar el ingreso', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function deleteExpense(expenseId) {
+  if (!confirm('¿Eliminar este gasto?')) return;
+  
+  showLoading(true);
+  
+  try {
+    const result = await APIService.eliminar('gasto', expenseId);
+    if (result.success) {
+      showAlert('Gasto eliminado', 'success');
+      await reloadData();
+      loadExpenses();
+    } else {
+      showAlert(result.message || 'Error al eliminar el gasto', 'danger');
+    }
+  } catch (err) {
+    console.error('Error eliminando gasto:', err);
+    showAlert('Error al eliminar el gasto', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function deleteCard(cardId) {
+  if (!confirm('¿Eliminar esta tarjeta?')) return;
+  
+  showLoading(true);
+  
+  try {
+    const result = await APIService.eliminar('tarjeta', cardId);
+    if (result.success) {
+      showAlert('Tarjeta eliminada', 'success');
+      await reloadData();
+      loadCards();
+    } else {
+      showAlert(result.message || 'Error al eliminar la tarjeta', 'danger');
+    }
+  } catch (err) {
+    console.error('Error eliminando tarjeta:', err);
+    showAlert('Error al eliminar la tarjeta', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function deleteSharedExpense(id) {
+  if (!confirm('¿Eliminar este gasto compartido?')) return;
+  
+  showLoading(true);
+  
+  try {
+    const result = await APIService.eliminar('gastos_compartidos', id);
+    if (result.success) {
+      showAlert('Gasto compartido eliminado', 'success');
+      await reloadData();
+      loadSharedSection();
+    } else {
+      showAlert(result.message || 'Error al eliminar el gasto compartido', 'danger');
+    }
+  } catch (err) {
+    console.error('Error eliminando gasto compartido:', err);
+    showAlert('Error al eliminar el gasto compartido', 'danger');
+  } finally {
+    showLoading(false);
+  }
+}
+
+// =========================================================
+// OTRAS SECCIONES
+// =========================================================
+
+async function loadCards() {
+  const list = $('#cardsList');
+  if (!list) return;
+  
+  try {
+    APP_STATE.data.tarjetas = await APIService.leer('tarjetas');
+  } catch (err) {
+    console.error('Error cargando tarjetas:', err);
+  }
+  
+  const tarjetas = APP_STATE.data.tarjetas || [];
+  
+  if (tarjetas.length === 0) {
+    list.innerHTML = `
       <div class="p-6 text-center text-gray-500">
         <i class="fas fa-credit-card text-4xl mb-3"></i>
         <p class="mb-3">No tienes tarjetas registradas</p>
-        <button class="btn btn-accent btn-sm" onclick="document.getElementById('addCardBtn').click()">Agregar primera tarjeta</button>
+        <button class="btn btn-accent btn-sm bg-primary text-white px-3 py-1 rounded text-sm hover:bg-teal-700" onclick="openCardModal()">
+          <i class="fas fa-plus"></i> Agregar primera tarjeta
+        </button>
       </div>`;
     return;
   }
-  box.innerHTML = arr.map(t=>`
-    <div class="p-4 border-b border-gray-100 flex items-center justify-between">
-      <div>
-        <div class="font-semibold">${escapeHtml(t.banco||'Tarjeta')} • **** ${escapeHtml(t.ultimos_4||'0000')}</div>
-        <div class="text-xs text-gray-500">Cierre: ${escapeHtml(String(t.dia_cierre||'-'))} • Vence: ${escapeHtml(String(t.dia_vencimiento||'-'))}</div>
-      </div>
-      <div class="text-xs text-gray-500">${escapeHtml((t.tipo||'visa').toUpperCase())}</div>
-    </div>
-  `).join('');
-}
-
-async function saveCard() {
-  const form = $('#cardForm'); if (!form) return;
-  const id = form.querySelector('input[name="id"]').value || '';
-  const banco = form.querySelector('input[name="banco"]').value.trim();
-  const ultimos_4 = form.querySelector('input[name="ultimos_4"]').value.trim();
-  const limite_credito = safeNum(form.querySelector('input[name="limite_credito"]').value);
-  const dia_cierre = parseInt(form.querySelector('input[name="dia_cierre"]').value||'0',10);
-  const dia_vencimiento = parseInt(form.querySelector('input[name="dia_vencimiento"]').value||'0',10);
-  const tipo = form.querySelector('select[name="tipo"]').value;
-
-  if (!banco || ultimos_4.length!==4 || !dia_cierre || !dia_vencimiento) {
-    showAlert('Completá banco, últimos 4, cierre y vencimiento.', 'warning');
-    return;
-  }
-
-  const fila = { id: id||uid('card'), userEmail: APP_STATE.user.email, banco, ultimos_4, limite_credito, dia_cierre, dia_vencimiento, tipo, createdAt: new Date().toISOString() };
-  try {
-    if (id) await apiUpdateOrLocal('tarjetas', fila);
-    else await apiSaveOrLocal('tarjetas', fila);
-    APP_STATE.data.tarjetas = await apiReadOrLocal('tarjetas');
-    closeAllModals();
-    renderCards();
-    showAlert('Tarjeta guardada.', 'success');
-  } catch (err) {
-    console.error(err);
-    showAlert('No se pudo guardar tarjeta.', 'danger');
-  }
-}
-
-// ===============================
-// Proyecciones / Reports / Settings (stubs básicos)
-// ===============================
-function renderProjections() {
-  // Por ahora: rellena tabla con gastos fijos + cuotas del mes (estimado)
-  const tbody = $('#projectionsTableBody'); if (!tbody) return;
-
-  const monthFilter = $('#projectionMonthFilter')?.value || 'current';
-  const typeFilter = $('#projectionTypeFilter')?.value || 'all';
-
-  const base = new Date();
-  let offset = 0;
-  if (monthFilter==='next') offset = 1;
-  else if (monthFilter==='+2') offset = 2;
-  const target = new Date(base.getFullYear(), base.getMonth()+offset, 1);
-  const y = target.getFullYear();
-  const m = target.getMonth()+1;
-
-  let rows = [];
-
-  // Fijos: se repiten cada mes
-  (APP_STATE.data.gastos||[]).filter(g=>g.tipo==='fixed').forEach(g=>{
-    const d = parseDateAny(g.fecha) || target;
-    const date = new Date(y, m-1, Math.min(d.getDate(), 28));
-    rows.push({
-      desc: g.descripcion,
-      fecha: date,
-      total: safeNum(g.monto),
-      mine: safeNum(g.monto),
-      partner: 0,
-      tipo: 'fixed'
-    });
+  
+  let html = '';
+  tarjetas.forEach(tarjeta => {
+    const tipoMap = {
+      'visa': 'Visa',
+      'mastercard': 'Mastercard',
+      'amex': 'American Express',
+      'other': 'Otra'
+    };
+    const tipo = tipoMap[tarjeta.tipo] || tarjeta.tipo;
+    
+    html += `
+      <div class="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-4">
+          <div class="w-12 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded flex items-center justify-center">
+            <i class="fas fa-credit-card text-white"></i>
+          </div>
+          <div>
+            <div class="font-semibold">${escapeHtml(tarjeta.banco || 'Tarjeta')}</div>
+            <div class="text-xs text-gray-500">
+              ${escapeHtml(tipo)} • **** ${escapeHtml(tarjeta.ultimos_4 || '0000')}
+            </div>
+            <div class="text-xs text-gray-500 mt-1">
+              Cierre: día ${tarjeta.dia_cierre} • Vencimiento: día ${tarjeta.dia_vencimiento}
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="text-right">
+            <div class="font-bold text-gray-900">${fmtMoney(tarjeta.limite_credito || 0)}</div>
+            <div class="text-xs text-gray-500">Límite</div>
+          </div>
+          <div class="flex gap-1">
+            <button class="btn btn-sm btn-secondary bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm hover:bg-gray-300" onclick="editCard('${tarjeta.id}')">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button class="btn btn-sm btn-danger bg-red-100 text-red-700 px-2 py-1 rounded text-sm hover:bg-red-200" onclick="deleteCard('${tarjeta.id}')">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>`;
   });
-
-  // Crédito: cuotas
-  (APP_STATE.data.gastos||[]).filter(g=>g.tipo==='credit').forEach(g=>{
-    const d0 = parseDateAny(g.fecha); if (!d0) return;
-    const cuotas = Math.max(1, parseInt(g.cuotas||1,10));
-    const total = safeNum(g.monto);
-    const per = cuotas>0 ? total/cuotas : total;
-    // consideramos cuotas desde mes de compra
-    const monthsFrom = (y - d0.getFullYear())*12 + (m - (d0.getMonth()+1));
-    if (monthsFrom < 0 || monthsFrom >= cuotas) return;
-    rows.push({ desc:`${g.descripcion} (cuota ${monthsFrom+1}/${cuotas})`, fecha: new Date(y,m-1,10), total: per, mine: per, partner:0, tipo:'credit' });
-  });
-
-  // Shared aprobados (si existen)
-  (APP_STATE.data.gastos_compartidos||[]).forEach(r=>{
-    const dr = parseDateAny(r.fecha); if (!dr) return;
-    if (!sameMonth(dr, y, m)) return;
-    const total = safeNum(r.total||r.monto||r.amount);
-    const creator = r.creatorEmail || r.fromEmail || r.userEmail;
-    const pctCreator = safeNum(r.porcentaje_creator ?? r.porcentaje_tu ?? 50);
-    const creatorShare = total*(pctCreator/100);
-    const partnerShare = total-creatorShare;
-    const mine = (creator===APP_STATE.user.email) ? creatorShare : partnerShare;
-    const partner = total - mine;
-    rows.push({ desc:r.descripcion, fecha: dr, total, mine, partner, tipo:'shared' });
-  });
-
-  if (typeFilter !== 'all') rows = rows.filter(r=>r.tipo===typeFilter);
-
-  rows.sort((a,b)=>a.fecha-b.fecha);
-
-  if (!rows.length) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="6" class="p-6 text-center text-gray-500">
-          <i class="fas fa-calendar-check text-4xl mb-3"></i>
-          <p>No hay pagos programados</p>
-        </td>
-      </tr>`;
-    return;
-  }
-
-  tbody.innerHTML = rows.map(r=>`
-    <tr class="border-b">
-      <td class="p-3">${escapeHtml(r.desc||'')}</td>
-      <td class="p-3">${escapeHtml(fmtDate(r.fecha))}</td>
-      <td class="p-3 text-right font-semibold">${fmtMoney(r.total)}</td>
-      <td class="p-3 text-right">${fmtMoney(r.mine)}</td>
-      <td class="p-3 text-right">${fmtMoney(r.partner)}</td>
-      <td class="p-3 text-center">${escapeHtml(labelTipo(r.tipo))}</td>
-    </tr>
-  `).join('');
-
-  setText('totalToPay', fmtMoney(rows.reduce((a,r)=>a+r.total,0)));
-  setText('pendingInstallments', String((APP_STATE.data.gastos||[]).filter(g=>g.tipo==='credit' && (g.cuotas||1)>1).length));
+  
+  list.innerHTML = html;
 }
 
-function renderReports() {
-  // simple: muestra balances
-  const y = new Date().getFullYear();
-  const incY = (APP_STATE.data.ingresos||[]).filter(x=>parseDateAny(x.fecha)?.getFullYear()===y).reduce((a,x)=>a+safeNum(x.monto),0);
-  const expY = (APP_STATE.data.gastos||[]).filter(x=>parseDateAny(x.fecha)?.getFullYear()===y).reduce((a,x)=>a+safeNum(x.monto),0);
-  setText('yearlyBalance', fmtMoney(incY-expY));
-  setText('totalSavings', fmtMoney(Math.max(0, incY-expY)));
+async function loadReports() {
+  const ingresos = APP_STATE.data.ingresos || [];
+  const gastos = APP_STATE.data.gastos || [];
+  const gastosCompartidos = APP_STATE.data.gastos_compartidos || [];
+  
+  const currentYear = new Date().getFullYear();
+  const ingresosAnuales = ingresos
+    .filter(i => {
+      try {
+        return new Date(i.fecha).getFullYear() === currentYear;
+      } catch {
+        return false;
+      }
+    })
+    .reduce((sum, i) => sum + (parseAmount(i.monto) || 0), 0);
+  
+  const gastosAnuales = [...gastos, ...gastosCompartidos]
+    .filter(g => {
+      try {
+        return new Date(g.fecha).getFullYear() === currentYear;
+      } catch {
+        return false;
+      }
+    })
+    .reduce((sum, g) => sum + (parseAmount(g.monto) || 0), 0);
+  
+  const balanceAnual = ingresosAnuales - gastosAnuales;
+  const ahorroTotal = balanceAnual > 0 ? balanceAnual : 0;
+  
+  setText('yearlyBalance', fmtMoney(balanceAnual));
+  setText('totalSavings', fmtMoney(ahorroTotal));
+  setText('monthlyAverage', fmtMoney(gastosAnuales / 12));
 }
 
-function renderSettings() {
-  $('#profileName') && ($('#profileName').value = APP_STATE.user?.name || '');
-  $('#profileEmail') && ($('#profileEmail').value = APP_STATE.user?.email || '');
-  $('#profileCurrency') && ($('#profileCurrency').value = APP_STATE.user?.currency || CONFIG.DEFAULT_CURRENCY);
-  // categorías lista básica
+function loadSettings() {
+  const profileName = $('#profileName');
+  const profileEmail = $('#profileEmail');
+  const profileCurrency = $('#profileCurrency');
+  
+  if (profileName) profileName.value = APP_STATE.user?.name || '';
+  if (profileEmail) profileEmail.value = APP_STATE.user?.email || '';
+  if (profileCurrency) profileCurrency.value = APP_STATE.user?.currency || CONFIG.DEFAULT_CURRENCY;
+  
+  loadCategories();
+}
+
+async function loadCategories() {
   const list = $('#categoriesList');
   if (!list) return;
+  
+  const categorias = APP_STATE.data.categorias || [];
+  
+  if (categorias.length === 0) {
+    list.innerHTML = `
+      <div class="text-center text-gray-500 py-4">
+        <p>No hay categorías configuradas</p>
+      </div>`;
+    return;
+  }
+  
+  let html = '';
+  categorias.forEach(cat => {
+    const tipoMap = {
+      'income': 'Ingreso',
+      'fixed': 'Fijo',
+      'variable': 'Variable'
+    };
+    const tipo = tipoMap[cat.tipo] || cat.tipo;
+    const tipoColor = cat.tipo === 'income' ? 'success' : 
+                     cat.tipo === 'fixed' ? 'primary' : 'warning';
+    
+    html += `
+      <div class="flex items-center justify-between p-2 border border-gray-200 rounded">
+        <div class="flex items-center gap-3">
+          <span class="badge badge-${tipoColor}">${tipo}</span>
+          <span class="font-medium">${escapeHtml(cat.nombre)}</span>
+        </div>
+        <div class="flex gap-1">
+          <button class="btn btn-sm btn-secondary bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm hover:bg-gray-300">
+            <i class="fas fa-edit"></i>
+          </button>
+          <button class="btn btn-sm btn-danger bg-red-100 text-red-700 px-2 py-1 rounded text-sm hover:bg-red-200" onclick="deleteCategory('${cat.id}')">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>`;
+  });
+  
+  list.innerHTML = html;
+}
 
-  list.innerHTML = (APP_STATE.data.categorias||[]).map(c=>`
-    <div class="flex items-center justify-between border rounded-lg p-2">
-      <div class="min-w-0">
-        <div class="font-medium truncate">${escapeHtml(c.nombre)}</div>
-        <div class="text-xs text-gray-500">${escapeHtml(labelTipo(c.tipo))}</div>
-      </div>
-      <button class="btn btn-danger btn-sm" data-cat-id="${escapeHtml(c.id)}" title="Eliminar"><i class="fas fa-trash"></i></button>
-    </div>
-  `).join('') || '<div class="text-sm text-gray-500">Sin categorías</div>';
-
-  list.onclick = async (e)=>{
-    const btn = e.target.closest('button[data-cat-id]'); if (!btn) return;
-    const id = btn.dataset.catId;
-    const cat = (APP_STATE.data.categorias||[]).find(x=>x.id===id);
-    if (!cat) return;
-    if (!confirm(`Eliminar categoría "${cat.nombre}"?`)) return;
-    try {
-      await apiDeleteOrLocal('categorias', id);
-      APP_STATE.data.categorias = await apiReadOrLocal('categorias');
-      updateCategoryUI();
-      renderSettings();
-      showAlert('Categoría eliminada.', 'success');
-    } catch (err) {
-      console.error(err);
-      showAlert('No se pudo eliminar categoría.', 'danger');
+async function saveProfile() {
+  const name = $('#profileName')?.value?.trim();
+  const currency = $('#profileCurrency')?.value;
+  
+  if (!name) {
+    showAlert('El nombre es requerido', 'warning');
+    return;
+  }
+  
+  showLoading(true);
+  
+  try {
+    const result = await APIService.actualizarPerfil({
+      nombre: name,
+      moneda: currency
+    });
+    
+    if (result.success) {
+      APP_STATE.user.name = name;
+      APP_STATE.user.currency = currency;
+      
+      localStorage.setItem('financeapp_user', JSON.stringify(APP_STATE.user));
+      updateUserUI();
+      
+      showAlert('Perfil actualizado exitosamente', 'success');
+    } else {
+      showAlert(result.message || 'Error al actualizar el perfil', 'danger');
     }
-  };
+  } catch (err) {
+    console.error('Error actualizando perfil:', err);
+    showAlert('Error al actualizar el perfil', 'danger');
+  } finally {
+    showLoading(false);
+  }
 }
 
-// ===============================
-// Utilidades labels/fechas
-// ===============================
-function toISO(v) {
-  const d = parseDateAny(v);
-  if (!d) return '';
-  const dd = new Date(d.getTime() - d.getTimezoneOffset()*60000);
-  return dd.toISOString().slice(0,10);
+function changePassword() {
+  const newPassword = $('#newPassword')?.value;
+  const confirmPassword = $('#confirmPassword')?.value;
+  
+  if (!newPassword || !confirmPassword) {
+    showAlert('Completa ambos campos de contraseña', 'warning');
+    return;
+  }
+  
+  if (newPassword !== confirmPassword) {
+    showAlert('Las contraseñas no coinciden', 'warning');
+    return;
+  }
+  
+  if (newPassword.length < 6) {
+    showAlert('La contraseña debe tener al menos 6 caracteres', 'warning');
+    return;
+  }
+  
+  showAlert('Para cambiar la contraseña, contacta al administrador o usa la opción de recuperación', 'info');
+  
+  $('#newPassword').value = '';
+  $('#confirmPassword').value = '';
 }
-function fmtDate(v) {
-  const d = parseDateAny(v);
-  if (!d) return '—';
-  return d.toLocaleDateString('es-AR', { year:'numeric', month:'2-digit', day:'2-digit' });
+
+function exportData() {
+  console.log('📤 Datos del usuario:', APP_STATE.user);
+  console.log('📤 Todos los datos:', APP_STATE.data);
+  showAlert('Función de exportación en desarrollo. Los datos se muestran en consola.', 'info');
 }
-function labelTipo(t='') {
-  const x = String(t||'').toLowerCase();
-  if (x==='fixed') return 'Fijo';
-  if (x==='variable') return 'Variable';
-  if (x==='credit') return 'Crédito';
-  if (x==='income') return 'Ingreso';
-  if (x==='shared') return 'Compartido';
-  return t || '—';
+
+function clearData() {
+  if (!confirm('¿Estás seguro? Esto eliminará todos tus datos locales del navegador.')) return;
+  
+  try {
+    const keys = Object.keys(localStorage).filter(key => key.startsWith('financeapp_'));
+    keys.forEach(key => localStorage.removeItem(key));
+    
+    showAlert('Datos locales eliminados. La página se recargará.', 'warning');
+    setTimeout(() => location.reload(), 1500);
+  } catch (err) {
+    console.error('Error eliminando datos locales:', err);
+    showAlert('Error al eliminar datos locales', 'danger');
+  }
 }
-function labelFreq(f='') {
-  const x = String(f||'').toLowerCase();
-  const map = {
-    weekly:'Semanal', biweekly:'Quincenal', monthly:'Mensual',
-    bimonthly:'Bimestral', quarterly:'Trimestral', yearly:'Anual', onetime:'Único'
-  };
-  return map[x] || f || '—';
+
+// =========================================================
+// FILTROS Y MODALES
+// =========================================================
+
+function setupFilters() {
+  // Filtros de ingresos
+  $('#applyIncomePeriodBtn')?.addEventListener('click', () => {
+    APP_STATE.filters.incomes.month = $('#incomeMonthSelect')?.value || '';
+    APP_STATE.filters.incomes.year = $('#incomeYearSelect')?.value || '';
+    loadIncomes();
+  });
+  
+  $('#clearIncomePeriodBtn')?.addEventListener('click', () => {
+    APP_STATE.filters.incomes = { month: '', year: '' };
+    $('#incomeMonthSelect').value = '';
+    $('#incomeYearSelect').value = '';
+    loadIncomes();
+  });
+  
+  // Filtros de gastos
+  $('#applyExpensePeriodBtn')?.addEventListener('click', () => {
+    APP_STATE.filters.expenses.month = $('#expenseMonthSelect')?.value || '';
+    APP_STATE.filters.expenses.year = $('#expenseYearSelect')?.value || '';
+    APP_STATE.filters.expenses.category = $('#expenseFilter')?.value || 'all';
+    loadExpenses();
+  });
+  
+  $('#clearExpensePeriodBtn')?.addEventListener('click', () => {
+    APP_STATE.filters.expenses = { month: '', year: '', category: 'all', tipo: 'all' };
+    $('#expenseMonthSelect').value = '';
+    $('#expenseYearSelect').value = '';
+    $('#expenseFilter').value = 'all';
+    $$('.tab').forEach(tab => tab.classList.remove('active'));
+    $('.tab[data-tab="all"]')?.classList.add('active');
+    loadExpenses();
+  });
+  
+  // Tabs de gastos
+  $$('.tab[data-tab]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      APP_STATE.filters.expenses.tipo = tab.dataset.tab;
+      loadExpenses();
+    });
+  });
+  
+  // Filtros de proyecciones
+  // Filtro de mes (nuevo)
+  $('#projectionMonthFilter')?.addEventListener('change', () => {
+    APP_STATE.filters.projections.month = $('#projectionMonthFilter').value;
+    loadProjections();
+  });
+
+  // (Compat) si todavía existe el filtro viejo de período, no rompe nada
+  $('#projectionPeriodFilter')?.addEventListener('change', () => {
+    APP_STATE.filters.projections.periodo = $('#projectionPeriodFilter').value;
+    loadProjections();
+  });
+$('#projectionYearFilter')?.addEventListener('change', () => {
+    APP_STATE.filters.projections.year = $('#projectionYearFilter').value;
+
+    // Re-llenar meses según el año elegido
+    const y = parseInt(APP_STATE.filters.projections.year || new Date().getFullYear(), 10) || new Date().getFullYear();
+    const monthSel = $('#projectionMonthFilter');
+    if (monthSel) {
+      let htmlM = `<option value="">Todos los meses</option>`;
+      for (let m = 1; m <= 12; m++) {
+        const ym = `${y}-${pad2(m)}`;
+        htmlM += `<option value="${ym}">${MONTHS_ES[m-1]}</option>`;
+      }
+      monthSel.innerHTML = htmlM;
+
+      // Si el filtro actual no pertenece a ese año, ajustarlo al mes actual del año elegido
+      const cur = monthSel.value || APP_STATE.filters.projections.month || '';
+      if (!cur.startsWith(String(y) + '-')) {
+        APP_STATE.filters.projections.month = `${y}-${pad2(new Date().getMonth()+1)}`;
+      }
+      monthSel.value = APP_STATE.filters.projections.month || '';
+    }
+
+    loadProjections();
+  });
+$('#projectionTypeFilter')?.addEventListener('change', () => {
+    APP_STATE.filters.projections.tipo = $('#projectionTypeFilter').value;
+    loadProjections();
+  });
+
+
+  // Delegación (evita que se rompan botones si la UI se re-renderiza)
+  document.addEventListener('click', async (ev) => {
+    const t = ev.target?.closest?.('button, a');
+    if (!t) return;
+    const id = t.id || '';
+    if (id === 'addExpenseBtn') { ev.preventDefault(); openExpenseModal(); }
+    if (id === 'addIncomeBtn') { ev.preventDefault(); openIncomeModal(); }
+    if (id === 'addCardBtn') { ev.preventDefault(); openCardModal(); }
+    if (id === 'openCyclesBtn') { ev.preventDefault(); openCyclesModal(); }
+
+    // Aceptar invitación desde lista (solo si estás logueado con el email invitado)
+    if (t.dataset?.action === 'acceptInvite') {
+      ev.preventDefault();
+      const invId = (t.dataset.inviteId || '').toString().trim();
+      if (!invId) return;
+      try {
+        const res = await APIService.aceptarInvitacion(invId);
+        showToast(res.success ? '✅ Invitación aceptada' : (res.message || 'No se pudo aceptar'), res.success ? 'success' : 'error');
+        await refreshAllData();
+        showSection('shared');
+      } catch (e) {
+        showToast('Error aceptando invitación', 'error');
+      }
+    }
+  });
 }
+
+function setupModals() {
+  // Cerrar modales al hacer clic en X o fuera
+  $$('.modal-close').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const modal = this.closest('.modal-overlay');
+      if (modal) modal.classList.remove('active');
+    });
+  });
+  
+  $$('.modal-overlay').forEach(modal => {
+    modal.addEventListener('click', function(e) {
+      if (e.target === this) this.classList.remove('active');
+    });
+  });
+  
+  // Botones de guardar
+  $('#saveIncomeBtn')?.addEventListener('click', saveIncome);
+  $('#saveExpenseBtn')?.addEventListener('click', saveExpense);
+  $('#saveCardBtn')?.addEventListener('click', saveCard);
+  $('#sendInviteBtn')?.addEventListener('click', sendInvite);
+  $('#acceptInviteConfirmBtn')?.addEventListener('click', acceptInvite);
+  
+  // Event listeners para campos dinámicos
+  document.addEventListener('change', (e) => {
+    if (e.target.name === 'tipo') {
+      const creditCardFields = $('#creditCardFields');
+      if (e.target.value === 'credit') {
+        creditCardFields?.classList.remove('hidden');
+      } else {
+        creditCardFields?.classList.add('hidden');
+      }
+    }
+    
+    if (e.target.id === 'isSharedCheck') {
+      const sharedFields = $('#sharedFields');
+      if (e.target.checked) {
+        sharedFields?.classList.remove('hidden');
+      } else {
+        sharedFields?.classList.add('hidden');
+      }
+    }
+  });
+}
+
+function closeModal(modalId) {
+  $(`#${modalId}`)?.classList.remove('active');
+}
+
+// =========================================================
+// EXPORTAR FUNCIONES GLOBALES PARA onclick
+// =========================================================
+
+window.openIncomeModal = openIncomeModal;
+window.openExpenseModal = openExpenseModal;
+window.openCardModal = openCardModal;
+window.openSharedExpenseModal = openSharedExpenseModal;
+window.openInviteModal = openInviteModal;
+window.openAcceptInviteModal = openAcceptInviteModal;
+window.editIncome = openIncomeModal;
+window.editExpense = openExpenseModal;
+window.editCard = openCardModal;
+window.deleteIncome = deleteIncome;
+window.deleteExpense = deleteExpense;
+window.deleteCard = deleteCard;
+window.deleteSharedExpense = deleteSharedExpense;
+window.deleteCategory = async function(id) {
+  if (!confirm('¿Eliminar esta categoría?')) return;
+  
+  showLoading(true);
+  
+  try {
+    const result = await APIService.eliminar('categoria', id);
+    if (result.success) {
+      showAlert('Categoría eliminada', 'success');
+      await reloadData();
+      loadCategories();
+    } else {
+      showAlert(result.message || 'Error al eliminar la categoría', 'danger');
+    }
+  } catch (err) {
+    console.error('Error eliminando categoría:', err);
+    showAlert('Error al eliminar la categoría', 'danger');
+  } finally {
+    showLoading(false);
+  }
+};
+
+// Calcular cuota mensual automáticamente
+document.addEventListener('input', (e) => {
+  if (e.target.name === 'monto' || e.target.id === 'cuotasInput') {
+    const montoInput = document.querySelector('input[name="monto"]');
+    const cuotasInput = document.querySelector('input[name="cuotas"]');
+    const cuotaPreview = document.getElementById('cuotaPreview');
+    const cuotaMensual = document.getElementById('cuotaMensual');
+    
+    if (montoInput && cuotasInput && cuotaPreview && cuotaMensual) {
+      const monto = parseFloat(montoInput.value) || 0;
+      const cuotas = parseInt(cuotasInput.value) || 1;
+      
+      if (monto > 0 && cuotas > 1) {
+        const cuotaMensualCalculada = monto / cuotas;
+        cuotaMensual.textContent = fmtMoney(cuotaMensualCalculada);
+        cuotaPreview.classList.remove('hidden');
+      } else {
+        cuotaPreview.classList.add('hidden');
+      }
+    }
+  }
+});
+// =========================================================
+// INICIALIZACIÓN COMPLETA
+// =========================================================
+
+console.log('✅ FinanceApp conectado al backend real');
+console.log('🌐 API URL:', CONFIG.API_URL);
+console.log('👤 Usuario:', APP_STATE.user);
+
+// Configurar polling de notificaciones (singleton)
+let __notifPollHandle = null;
+function startNotifPolling_() {
+  try { if (__notifPollHandle) clearInterval(__notifPollHandle); } catch(e) {}
+  __notifPollHandle = setInterval(async () => {
+    if (!APP_STATE.user) return;
+    if (APP_STATE.__notifInFlight) return;
+
+    const now = Date.now();
+    const minMs = Math.max(15000, CONFIG.NOTIF_POLL_MS); // evita spam si el init se ejecuta varias veces
+    if (APP_STATE.__lastNotifPoll && (now - APP_STATE.__lastNotifPoll) < minMs) return;
+
+    APP_STATE.__lastNotifPoll = now;
+    APP_STATE.__notifInFlight = true;
+    try {
+      const notificaciones = await APIService.leerNotificaciones();
+      APP_STATE.data.notificaciones = notificaciones;
+      updateNotifications();
+    } catch (err) {
+      // Silenciar error en polling
+    } finally {
+      APP_STATE.__notifInFlight = false;
+    }
+  }, CONFIG.NOTIF_POLL_MS);
+}
+
+startNotifPolling_();
