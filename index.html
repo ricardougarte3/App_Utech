@@ -634,13 +634,15 @@
           <div class="chart-card border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="chart-header flex justify-between items-center mb-4">
               <h3 class="chart-title font-semibold text-gray-900">Distribución de Gastos</h3>
-              <select class="form-select border border-gray-300 rounded px-3 py-2 text-sm" id="expensePeriod">
-                <option value="month">Este mes</option>
-                <option value="quarter">Último trimestre</option>
-                <option value="year">Último año</option>
-              </select>
+              
+              <div class="flex flex-wrap gap-2 items-center">
+                <select class="form-select border border-gray-300 rounded px-3 py-2 text-sm" id="dashMonth" title="Mes"></select>
+                <select class="form-select border border-gray-300 rounded px-3 py-2 text-sm" id="dashYear" title="Año"></select>
+                <select class="form-select border border-gray-300 rounded px-3 py-2 text-sm" id="dashCategory" title="Categoría"></select>
+                <select class="form-select border border-gray-300 rounded px-3 py-2 text-sm" id="dashScope" title="Tipo"></select>
+              </div>
             </div>
-            <div class="chart-container h-64">
+            <div class="chart-container h-64" id="expensesChartWrap">
               <canvas id="expensesChart"></canvas>
             </div>
           </div>
@@ -648,10 +650,7 @@
           <div class="chart-card border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="chart-header flex justify-between items-center mb-4">
               <h3 class="chart-title font-semibold text-gray-900">Evolución Mensual</h3>
-              <select class="form-select border border-gray-300 rounded px-3 py-2 text-sm" id="trendPeriod">
-                <option value="6">Últimos 6 meses</option>
-                <option value="12">Último año</option>
-              </select>
+              <div class="text-sm text-gray-500">Año / categoría según filtros</div>
             </div>
             <div class="chart-container h-64">
               <canvas id="trendChart"></canvas>
