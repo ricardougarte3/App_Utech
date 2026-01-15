@@ -195,6 +195,77 @@ function showAlert(msg, type = 'info', timeout = 3500) {
 }
 
 // Helper para formatear dinero
+// ===============================
+// Dashboard Filters
+// ===============================
+function getDashboardFilters_() {
+  const monthSel = document.getElementById('dashMonth');
+  const yearSel = document.getElementById('dashYear');
+  const catSel = document.getElementById('dashCategory');
+  const scopeSel = document.getElementById('dashScope');
+  return {
+    month: monthSel ? (monthSel.value || 'current') : 'current',
+    year: yearSel ? (yearSel.value || 'current') : 'current',
+    category: catSel ? (catSel.value || 'all') : 'all',
+    scope: scopeSel ? (scopeSel.value || 'all') : 'all'
+  };
+}
+
+function setupDashboardFilters_() {
+  const monthSel = document.getElementById('dashMonth');
+  const yearSel = document.getElementById('dashYear');
+  const catSel = document.getElementById('dashCategory');
+  const scopeSel = document.getElementById('dashScope');
+  if (!monthSel || !yearSel || !catSel || !scopeSel) return;
+
+  // Populate months
+  const months = [
+    {v:'current', t:'Mes actual'}, {v:'01',t:'Enero'},{v:'02',t:'Febrero'},{v:'03',t:'Marzo'},{v:'04',t:'Abril'},
+    {v:'05',t:'Mayo'},{v:'06',t:'Junio'},{v:'07',t:'Julio'},{v:'08',t:'Agosto'},{v:'09',t:'Septiembre'},
+    {v:'10',t:'Octubre'},{v:'11',t:'Noviembre'},{v:'12',t:'Diciembre'}
+  ];
+  monthSel.innerHTML = months.map(m=>`<option value="${m.v}">${m.t}</option>`).join('');
+
+  // Populate years from data
+  const allDates = []
+    .concat((APP_STATE.data.ingresos||[]).map(x=>x.fecha))
+    .concat((APP_STATE.data.gastos||[]).map(x=>x.fecha))
+    .concat((APP_STATE.data.gastos_compartidos||[]).map(x=>x.fecha))
+    .filter(Boolean);
+  const yearsSet = new Set();
+  allDates.forEach(d=>{
+    const y = new Date(d).getFullYear();
+    if (y && !isNaN(y)) yearsSet.add(y);
+  });
+  const nowY = new Date().getFullYear();
+  yearsSet.add(nowY);
+  const years = Array.from(yearsSet).sort((a,b)=>b-a);
+  yearSel.innerHTML = ['<option value="current">Año actual</option>']
+    .concat(years.map(y=>`<option value="${y}">${y}</option>`))
+    .join('');
+
+  // Categories from expenses
+  const catsSet = new Set();
+  (APP_STATE.data.gastos||[]).forEach(g=>{ if(g.categoria) catsSet.add(g.categoria); });
+  (APP_STATE.data.gastos_compartidos||[]).forEach(g=>{ if(g.categoria) catsSet.add(g.categoria); });
+  const cats = Array.from(catsSet).sort((a,b)=>a.localeCompare(b));
+  catSel.innerHTML = ['<option value="all">Todas las categorías</option>']
+    .concat(cats.map(c=>`<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`))
+    .join('');
+
+  scopeSel.innerHTML = [
+    '<option value="all">Gastos: Todos</option>',
+    '<option value="own">Gastos: Propios</option>',
+    '<option value="shared">Gastos: Compartidos</option>'
+  ].join('');
+
+  const onChange = ()=>{ updateDashboard(); };
+  monthSel.onchange = onChange;
+  yearSel.onchange = onChange;
+  catSel.onchange = onChange;
+  scopeSel.onchange = onChange;
+}
+
 function parseAmount(v) {
   if (v === null || v === undefined) return 0;
   if (typeof v === 'number') return isFinite(v) ? v : 0;
@@ -233,6 +304,13 @@ function fmtMoney(v) {
     return `$${n.toFixed(2)}`;
   }
 }
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return isNaN(n) ? null : n;
+}
+
 
 // ==============================
 // Helpers: fechas / meses / ciclos
@@ -466,150 +544,143 @@ function formatDate(dateStr) {
 }
 
 // =========================================================
-// SERVICIO API REAL
+// SERVICIO API REAL (JSONP - GitHub compatible)
 // =========================================================
 
 const APIService = {
-  async callAPI(action, params = {}) {
-    const url = new URL(CONFIG.API_URL);
-    const allParams = {
-      action: action,
-      callback: 'callback',
-      ...params,
-      timestamp: Date.now()
-    };
-    
-    const skipUserEmail = (params && (params.__skipUserEmail === true || params.__skipUserEmail === 'true'));
-    if (skipUserEmail) {
-      // Remove internal flag so it doesn't go to the backend
-      delete allParams.__skipUserEmail;
-    }
+  callAPI(action, params = {}) {
+    return new Promise((resolve, reject) => {
+      const callbackName = 'cb_' + Math.random().toString(36).slice(2);
 
-    if (APP_STATE.user?.email && action !== 'register' && action !== 'login' && !skipUserEmail) {
-      // allow explicit override (e.g., accepting invitation on behalf of invited email)
-      if (!('userEmail' in params) || !params.userEmail) {
-        allParams.userEmail = APP_STATE.user.email;
+      const url = new URL(CONFIG.API_URL);
+      const allParams = {
+        action,
+        callback: callbackName,
+        ...params,
+        timestamp: Date.now()
+      };
+
+      const skipUserEmail =
+        params && (params.__skipUserEmail === true || params.__skipUserEmail === 'true');
+
+      if (skipUserEmail) {
+        delete allParams.__skipUserEmail;
       }
-    }
-    
-    Object.entries(allParams).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== '') {
-        url.searchParams.append(key, value);
+
+      if (
+        APP_STATE.user &&
+        APP_STATE.user.email &&
+        action !== 'register' &&
+        action !== 'login' &&
+        !skipUserEmail
+      ) {
+        if (!('userEmail' in params) || !params.userEmail) {
+          allParams.userEmail = APP_STATE.user.email;
+        }
       }
-    });
-    
-    console.log('🌐 API Call:', action, params);
-    
-    try {
-      const response = await fetch(url);
-      
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      
-      const responseText = await response.text();
-      
-      if (responseText.includes('callback(')) {
+
+      Object.entries(allParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          url.searchParams.append(key, value);
+        }
+      });
+
+      console.log('🌐 API Call:', action, params);
+
+      window[callbackName] = (result) => {
         try {
-          const jsonStr = responseText.substring(
-            responseText.indexOf('(') + 1, 
-            responseText.lastIndexOf(')')
-          );
-          const result = JSON.parse(jsonStr);
-          
+          delete window[callbackName];
+          script.remove();
+
           if (!result.success && result.message && action !== 'login' && action !== 'register') {
             showAlert(result.message, 'warning');
           }
-          
-          return result;
-        } catch (parseError) {
-          console.error('❌ JSON Parse Error:', parseError);
-          throw new Error('Invalid JSON response from API');
+
+          resolve(result);
+        } catch (e) {
+          reject(e);
         }
-      } else {
-        try {
-          return JSON.parse(responseText);
-        } catch (jsonError) {
-          console.error('❌ Direct JSON parse failed:', jsonError);
-          throw new Error('API returned invalid format');
-        }
-      }
-    } catch (error) {
-      console.error('❌ Fetch Error:', error);
-      
-      if (CONFIG.USE_FALLBACK) {
-        return getFallbackData(action, params);
-      }
-      
-      showAlert('Error de conexión con el servidor', 'warning');
-      
-      return {
-        success: false,
-        message: 'Connection error',
-        datos: []
       };
-    }
+
+      const script = document.createElement('script');
+      script.src = url.toString();
+      script.async = true;
+
+      script.onerror = () => {
+        delete window[callbackName];
+        script.remove();
+        showAlert('Error de conexión con el servidor', 'warning');
+        reject(new Error('JSONP load error'));
+      };
+
+      document.body.appendChild(script);
+    });
   },
-  
+
   // 🔐 Autenticación
-  async register(email, password, name, currency = 'ARS') {
+  register(email, password, name, currency = 'ARS') {
     return this.callAPI('register', { email, password, name, currency });
   },
-  
-  async login(email, password) {
+
+  login(email, password) {
     return this.callAPI('login', { email, password });
   },
-  
+
   // 📊 Datos
   async leer(tabla, filters = {}) {
+    if (tabla === 'gastos_compartidos' && !filters.__skipUserEmail) {
+      filters.__skipUserEmail = true;
+    }
     const result = await this.callAPI('leer', { tabla, ...filters });
     return result.success ? (result.datos || []) : [];
   },
-  
-  async crear(tabla, data) {
+
+  crear(tabla, data) {
     return this.callAPI('crear', { tabla, ...data });
   },
-  
-  async actualizar(tabla, id, data) {
+
+  actualizar(tabla, id, data) {
     return this.callAPI('actualizar', { tabla, id, ...data });
   },
-  
-  async eliminar(tabla, id) {
+
+  eliminar(tabla, id) {
     return this.callAPI('eliminar', { tabla, id });
   },
-  
+
   // 👥 Parejas
-  async getPareja() {
+  getPareja() {
     return this.callAPI('get_pareja');
   },
-  
-  async crearInvitacion(payload) {
+
+  crearInvitacion(payload) {
     return this.crear('invitacion', payload);
   },
-  
-  async aceptarInvitacion(invitationId) {
+
+  aceptarInvitacion(invitationId) {
     return this.callAPI('aceptar_invitacion', { invitationId });
   },
-  
+
   // 🔔 Notificaciones
   async leerNotificaciones() {
-    const result = await this.leer('notificaciones', { unread: 'true' });
-    return result || [];
+    return this.leer('notificaciones', { unread: 'true' });
   },
-  
-  async marcarTodasLeidas() {
+
+  marcarTodasLeidas() {
     return this.callAPI('marcar_todas_leidas');
   },
-  
+
   // ⚙️ Configuración
-  async actualizarPerfil(data) {
+  actualizarPerfil(data) {
     const user = APP_STATE.user;
     if (!user || !user.id) throw new Error('Usuario no autenticado');
     return this.actualizar('usuarios', user.id, data);
   },
-  
-  async cambiarPassword(currentPassword, newPassword) {
+
+  cambiarPassword(currentPassword, newPassword) {
     return this.callAPI('cambiar_password', { currentPassword, newPassword });
   }
 };
+
 
 // =========================================================
 // ESTADO GLOBAL
@@ -680,63 +751,79 @@ async function handleQuickLogin() {
 }
 
 async function handleRegister(e) {
-  if (e) {
-    e.preventDefault();
-    e.stopPropagation();
-  }
-
-  if (APP_STATE._registering) return;
-  APP_STATE._registering = true;
-
-  const name = $('#registerName')?.value?.trim();
-  const email = $('#registerEmail')?.value?.trim();
-  const password = $('#registerPassword')?.value?.trim();
-  const confirmPassword = $('#registerConfirmPassword')?.value?.trim();
-
-  if (!name || !email || !password || !confirmPassword) {
-    showAlert('Completá todos los campos', 'warning');
-    APP_STATE._registering = false;
-    return;
-  }
-
-  if (password !== confirmPassword) {
-    showAlert('Las contraseñas no coinciden', 'warning');
-    APP_STATE._registering = false;
-    return;
-  }
-
-  if (password.length < 6) {
-    showAlert('La contraseña debe tener al menos 6 caracteres', 'warning');
-    APP_STATE._registering = false;
-    return;
-  }
-
-  showLoading(true);
-
   try {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    console.log('📝 Registro: handleRegister()');
+
+    if (APP_STATE._registering) {
+      console.warn('⚠️ Registro ya en progreso');
+      return;
+    }
+    APP_STATE._registering = true;
+
+    const name = $('#registerName')?.value?.trim();
+    const email = $('#registerEmail')?.value?.trim();
+    const password = $('#registerPassword')?.value?.trim();
+    const confirmPassword = $('#registerConfirmPassword')?.value?.trim();
+
+    console.log('📤 Datos registro:', { name, email });
+
+    if (!name || !email || !password || !confirmPassword) {
+      showToast('Completá todos los campos', 'warning');
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('Ingresá un email válido', 'warning');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showToast('Las contraseñas no coinciden', 'warning');
+      return;
+    }
+
+    if (password.length < 6) {
+      showToast('La contraseña debe tener al menos 6 caracteres', 'warning');
+      return;
+    }
+
+    showLoading(true);
+
+    console.log('🚀 Llamando a API register...');
     const result = await APIService.register(email, password, name);
 
-    if (result.success) {
-      showAlert('¡Cuenta creada exitosamente! Ahora podés iniciar sesión.', 'success');
-      
+    console.log('📥 Respuesta register:', result);
+
+    if (result && result.success) {
+      showToast('¡Cuenta creada exitosamente! Ahora podés iniciar sesión.', 'success');
+
+      // Volver a login
       $('#registerSection')?.classList.add('hidden');
-      $('#registerName').value = '';
-      $('#registerEmail').value = '';
-      $('#registerPassword').value = '';
-      $('#registerConfirmPassword').value = '';
-      $('#quickEmail').value = email;
-      $('#quickPassword').focus();
+      $('#loginSection')?.classList.remove('hidden');
+
+      // Limpiar formulario
+      ['registerName','registerEmail','registerPassword','registerConfirmPassword']
+        .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+
     } else {
-      showAlert(result.message || 'Error creando cuenta', 'danger');
+      showToast(result?.message || 'No se pudo crear la cuenta', 'danger');
     }
+
   } catch (err) {
     console.error('❌ Error en registro:', err);
-    showAlert('Error de conexión con el servidor', 'danger');
+    showToast('Error registrando cuenta', 'danger');
   } finally {
-    showLoading(false);
     APP_STATE._registering = false;
+    showLoading(false);
   }
 }
+
+
 
 function completeLogin(userData, options = {}) {
   const { persist = true, isDemo = false } = options;
@@ -835,6 +922,17 @@ async function activateInviteFromLogin_() {
     APP_STATE.user = login.user;
     localStorage.setItem('financeapp_user', JSON.stringify(APP_STATE.user));
     showToast('✅ Invitación activada. ¡Bienvenido!', 'success');
+
+// Notificación en la bandeja del usuario
+try {
+  await APIService.callAPI('crear', {
+    tabla: 'notificaciones',
+    titulo: 'Cuenta activada',
+    mensaje: 'Tu cuenta fue activada correctamente por el código de invitación.',
+    tipo: 'success',
+    leida: false
+  });
+} catch (e) { /* noop */ }
 
     // Ocultar login y cargar app
     document.getElementById('loginSection')?.classList.add('hidden');
@@ -955,6 +1053,16 @@ $('#registerLink')?.addEventListener('click', (e) => {
     });
   });
   
+
+
+// KPI cards -> navegación rápida
+$$('[data-kpi-nav]').forEach(card => {
+  card.style.cursor = 'pointer';
+  card.addEventListener('click', () => {
+    const target = card.getAttribute('data-kpi-nav');
+    if (target) showSection(target);
+  });
+});
   // Logout
   $('#logoutBtn')?.addEventListener('click', logout);
   
@@ -1166,6 +1274,7 @@ async function loadAll() {
     });
     
     updateCategoryUI();
+    setupDashboardFilters_();
     updateDashboard();
     updateNotifications();
     
@@ -1311,6 +1420,7 @@ function updateDashboard() {
   const ingresos = APP_STATE.data.ingresos || [];
   const gastos = APP_STATE.data.gastos || [];
   const gastosCompartidosAll = APP_STATE.data.gastos_compartidos || [];
+  const partnerEmail = APP_STATE.partner?.email || '';
   const gastosCompartidos = filterSharedForPair_(gastosCompartidosAll, APP_STATE.user?.email, partnerEmail);
 
   // --- DINERO DISPONIBLE: Total ingresos - Total gastos ---
@@ -1318,153 +1428,235 @@ function updateDashboard() {
   const totalGastos = gastos.reduce((sum, item) => sum + parseAmount(item.monto), 0);
   const dineroDisponible = totalIngresos - totalGastos;
 
-  // --- GASTOS DEL MES ACTUAL ---
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
   
-  const gastosMes = gastos.filter(g => {
-    try {
-      const fecha = new Date(g.fecha);
-      return fecha.getMonth() + 1 === currentMonth && fecha.getFullYear() === currentYear;
-    } catch {
-      return false;
-    }
+// --- GASTOS (filtros) ---
+const now = new Date();
+const filters = getDashboardFilters_();
+
+// Month/year selection
+const selectedYear = (filters.year === 'current') ? now.getFullYear() : parseInt(filters.year, 10);
+const selectedMonth = (filters.month === 'current') ? (now.getMonth() + 1) : parseInt(filters.month, 10);
+
+const isSamePeriod = (fechaStr) => {
+  if (!fechaStr) return false;
+  const d = new Date(fechaStr);
+  if (isNaN(d)) return false;
+  return d.getFullYear() === selectedYear && (d.getMonth() + 1) === selectedMonth;
+};
+
+// Build combined expenses list (own + shared share)
+const ownExpenses = (APP_STATE.data.gastos || [])
+  .filter(g => isSamePeriod(g.fecha))
+  .map(g => ({ ...g, __scope: 'own', __amount: parseAmount(g.monto) || 0 }));
+
+const sharedAll = filterSharedForPair_(APP_STATE.data.gastos_compartidos || [], APP_STATE.user?.email, partnerEmail);
+
+const myEmail = (APP_STATE.user?.email || '').toLowerCase();
+const sharedExpenses = sharedAll
+  .filter(g => isSamePeriod(g.fecha))
+  .map(g => {
+    const pct = parseFloat(g.porcentaje_tu ?? 50);
+    const isOwner = (String(g.email_usuario || '').toLowerCase() === myEmail);
+    const myPct = isOwner ? pct : (100 - pct);
+    const total = parseAmount(g.monto) || 0;
+    const myShare = total * (myPct / 100);
+    return { ...g, __scope: 'shared', __amount: myShare, __total: total, __myPct: myPct };
   });
-  
-  const gastosMesTotal = gastosMes.reduce((sum, item) => sum + parseAmount(item.monto), 0);
 
-  // --- LO QUE ME DEBEN ESTE MES (Deudas Compartidas) ---
-  const deudasCompartidasMes = gastosCompartidos
-    .filter(gc => {
-      try {
-        const fecha = new Date(gc.fecha);
-        return fecha.getMonth() + 1 === currentMonth && fecha.getFullYear() === currentYear;
-      } catch {
-        return false;
-      }
-    })
-    .reduce((sum, item) => {
-      const monto = parseAmount(item.monto);
-      const pct = parseAmount(item.porcentaje_tu) || 50;
-      
-      // Si yo pagué menos del 50%, me deben dinero
-      if (pct < 50) {
-        const partePareja = monto * ((50 - pct) / 100);
-        return sum + partePareja;
-      }
-      return sum;
-    }, 0);
+let expensesBase = ownExpenses.concat(sharedExpenses);
 
-  // --- ACTUALIZAR UI ---
-  setText('totalBalance', fmtMoney(dineroDisponible));  // Dinero Disponible
-  setText('monthlyIncome', fmtMoney(gastosMesTotal));   // Gastos del mes
-  setText('monthlyExpenses', fmtMoney(deudasCompartidasMes));  // Me deben
+// Scope filter
+if (filters.scope === 'own') expensesBase = ownExpenses;
+if (filters.scope === 'shared') expensesBase = sharedExpenses;
 
-  // Actualizar partner info
-  if (APP_STATE.partner?.email) {
-    setText('partnerName', APP_STATE.partner.email);
-  } else {
-    setText('partnerName', 'Sin pareja');
-  }
-
-  // Actualizar gráfico de distribución
-  updateExpensesChart(gastosMes);
-  updateTrendChart();
-  updateRecentActivity();
+// Category filter
+if (filters.category && filters.category !== 'all') {
+  expensesBase = expensesBase.filter(e => String(e.categoria || '') === String(filters.category));
 }
 
-function updateExpensesChart(gastosMes) {
-  const expensesCanvas = $('#expensesChart');
-  if (!expensesCanvas || !window.Chart) return;
-  
-  if (APP_STATE.charts.expenses) {
-    APP_STATE.charts.expenses.destroy();
-  }
-  
+// For the summary card: expenses of month including shared share (not full)
+const gastosMesTotal = expensesBase.reduce((sum, g) => sum + (g.__amount || 0), 0);
+
+
+// Ingresos del periodo (mes/año seleccionado)
+const ingresosMesTotal = (APP_STATE.data.ingresos || [])
+  .filter(i => isSamePeriod(i.fecha))
+  .reduce((sum, i) => sum + (parseAmount(i.monto) || 0), 0);
+
+const sharedMesTotal = sharedExpenses.reduce((sum, g) => sum + (g.__amount || 0), 0);
+
+// Pintar KPIs
+const elBalance = document.getElementById('totalBalance');
+const elIncome = document.getElementById('monthlyIncome');
+const elExpenses = document.getElementById('monthlyExpenses');
+const elShared = document.getElementById('sharedDebts');
+const elPartner = document.getElementById('partnerName');
+const elHint = document.getElementById('budgetHint');
+
+if (elBalance) elBalance.textContent = fmtMoney(dineroDisponible);
+if (elIncome) elIncome.textContent = fmtMoney(ingresosMesTotal);
+if (elExpenses) elExpenses.textContent = fmtMoney(gastosMesTotal);
+if (elShared) elShared.textContent = fmtMoney(sharedMesTotal);
+if (elPartner) elPartner.textContent = partnerEmail ? partnerEmail : 'Sin pareja';
+
+if (elHint) {
+  const mm = String(selectedMonth).padStart(2, '0');
+  elHint.textContent = `Periodo: ${mm}/${selectedYear} • ${filters.scope === 'all' ? 'Todos' : (filters.scope === 'own' ? 'Propios' : 'Compartidos')}${filters.category !== 'all' ? ' • ' + filters.category : ''}`;
+}
+
+
+// Build category aggregation
+
   // Agrupar gastos por categoría
   const categorias = {};
-  gastosMes.forEach(gasto => {
+  expensesBase.forEach(gasto => {
     const cat = gasto.categoria || 'Otros';
-    categorias[cat] = (categorias[cat] || 0) + (parseAmount(gasto.monto) || 0);
+    categorias[cat] = (categorias[cat] || 0) + ((gasto.__amount || 0));
   });
-  
+
   const labels = Object.keys(categorias);
   const data = Object.values(categorias);
-  
-  if (labels.length > 0) {
-    APP_STATE.charts.expenses = new Chart(expensesCanvas, {
-      type: 'doughnut',
-      data: {
-        labels: labels,
-        datasets: [{
-          data: data,
-          backgroundColor: [
-            '#0f766e', '#10b981', '#3b82f6', '#f59e0b', 
-            '#ef4444', '#8b5cf6', '#ec4899', '#f97316'
-          ]
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: {
-            position: 'bottom'
+
+  const expensesWrap = document.getElementById('expensesChartWrap');
+  let expensesChartEl = document.getElementById('expensesChart');
+
+  if (!expensesWrap) {
+    console.warn('⚠️ No se encontró #expensesChartWrap (dashboard).');
+  } else if (labels.length > 0 && window.Chart) {
+    // Si el placeholder reemplazó el canvas, lo recreamos
+    if (!expensesChartEl) {
+      expensesWrap.innerHTML = '<canvas id="expensesChart"></canvas>';
+      expensesChartEl = document.getElementById('expensesChart');
+    }
+
+    // Destruir gráfico previo
+    if (APP_STATE.charts.expenses) {
+      try { APP_STATE.charts.expenses.destroy(); } catch(e) {}
+      APP_STATE.charts.expenses = null;
+    }
+
+    if (expensesChartEl) {
+      APP_STATE.charts.expenses = new Chart(expensesChartEl, {
+        type: 'doughnut',
+        data: {
+          labels,
+          datasets: [{
+            data,
+            backgroundColor: [
+              '#0f766e', '#10b981', '#3b82f6', '#f59e0b', '#ef4444',
+              '#8b5cf6', '#06b6d4', '#14b8a6', '#22c55e', '#a855f7',
+              '#f97316', '#64748b'
+            ]
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom' }
           }
         }
-      }
-    });
-  } else {
-    expensesCanvas.innerHTML = `
+      });
+    }
+  } else if (expensesWrap) {
+    // No data (o Chart no cargó)
+    expensesWrap.innerHTML = `
       <div class="h-full flex items-center justify-center text-gray-500">
         <div class="text-center">
           <i class="fas fa-chart-pie text-4xl mb-2"></i>
-          <p>No hay gastos este mes</p>
+          <p>No hay gastos en el período</p>
         </div>
       </div>`;
   }
+
+  // Actualizar otros widgets
+  updateTrendChart();
+  updateRecentActivity();
+
 }
 
 function updateTrendChart() {
   const trendCanvas = $('#trendChart');
   if (!trendCanvas || !window.Chart) return;
-  
+
   if (APP_STATE.charts.trend) {
     APP_STATE.charts.trend.destroy();
   }
-  
-  // Datos de ejemplo para tendencia
-  const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun'];
-  const ingresosData = [185000, 190000, 185000, 200000, 195000, 210000];
-  const gastosData = [120000, 125000, 130000, 128000, 135000, 140000];
-  
+
+  const now = new Date();
+  const filters = getDashboardFilters_();
+  const selectedYear = (filters.year === 'current') ? now.getFullYear() : parseInt(filters.year, 10);
+  const myEmail = (APP_STATE.user?.email || '').toLowerCase();
+  const partnerEmail = (APP_STATE.partner?.email || '').toLowerCase();
+
+  const monthNames = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+  // Ingresos por mes
+  const incByMonth = Array(12).fill(0);
+  (APP_STATE.data.ingresos || []).forEach(i => {
+    if (!i.fecha) return;
+    const d = new Date(i.fecha);
+    if (isNaN(d) || d.getFullYear() !== selectedYear) return;
+    incByMonth[d.getMonth()] += (parseAmount(i.monto) || 0);
+  });
+
+  // Gastos por mes: propios + compartidos (tu parte)
+  const ownByMonth = Array(12).fill(0);
+  (APP_STATE.data.gastos || []).forEach(g => {
+    if (!g.fecha) return;
+    const d = new Date(g.fecha);
+    if (isNaN(d) || d.getFullYear() !== selectedYear) return;
+    if (filters.category && filters.category !== 'all' && String(g.categoria||'') !== String(filters.category)) return;
+    ownByMonth[d.getMonth()] += (parseAmount(g.monto) || 0);
+  });
+
+  const sharedByMonth = Array(12).fill(0);
+  (APP_STATE.data.gastos_compartidos || []).forEach(g => {
+    if (!g.fecha) return;
+    const d = new Date(g.fecha);
+    if (isNaN(d) || d.getFullYear() !== selectedYear) return;
+
+    const eU = String(g.email_usuario||'').toLowerCase();
+    const eP = String(g.email_pareja||'').toLowerCase();
+    const isMinePair = (eU === myEmail && eP === partnerEmail) || (eU === partnerEmail && eP === myEmail);
+    if (!isMinePair) return;
+
+    if (filters.category && filters.category !== 'all' && String(g.categoria||'') !== String(filters.category)) return;
+
+    const pct = parseFloat(g.porcentaje_tu ?? 50);
+    const isOwner = (eU === myEmail);
+    const myPct = isOwner ? pct : (100 - pct);
+    const total = (parseAmount(g.monto) || 0);
+    const myShare = total * (myPct / 100);
+
+    sharedByMonth[d.getMonth()] += myShare;
+  });
+
+  let gastosByMonth = ownByMonth.map((v, idx)=>v + sharedByMonth[idx]);
+  if (filters.scope === 'own') gastosByMonth = ownByMonth.slice();
+  if (filters.scope === 'shared') gastosByMonth = sharedByMonth.slice();
+
   APP_STATE.charts.trend = new Chart(trendCanvas, {
     type: 'line',
     data: {
-      labels: meses,
+      labels: monthNames,
       datasets: [
         {
           label: 'Ingresos',
-          data: ingresosData,
-          borderColor: '#10b981',
-          backgroundColor: 'rgba(16, 185, 129, 0.1)',
-          tension: 0.4
+          data: incByMonth,
+          tension: 0.35
         },
         {
           label: 'Gastos',
-          data: gastosData,
-          borderColor: '#ef4444',
-          backgroundColor: 'rgba(239, 68, 68, 0.1)',
-          tension: 0.4
+          data: gastosByMonth,
+          tension: 0.35
         }
       ]
     },
     options: {
       responsive: true,
       plugins: {
-        legend: {
-          position: 'top'
-        }
+        legend: { position: 'top' }
       },
       scales: {
         y: {
@@ -1483,35 +1675,59 @@ function updateTrendChart() {
 function updateRecentActivity() {
   const container = $('#recentActivity');
   if (!container) return;
-  
-  const actividades = [];
-  
-  // Agregar últimos 3 ingresos
-  (APP_STATE.data.ingresos || []).slice(0, 3).forEach(ingreso => {
-    actividades.push({
-      tipo: 'ingreso',
-      descripcion: ingreso.descripcion,
-      monto: ingreso.monto,
-      fecha: ingreso.fecha,
-      icono: 'fas fa-arrow-up text-green-500'
+
+  const items = [];
+  const myEmail = (APP_STATE.user?.email || '').toLowerCase();
+  const partnerEmail = (APP_STATE.partner?.email || '').toLowerCase();
+
+  (APP_STATE.data.ingresos || []).forEach(i => {
+    if (!i.fecha) return;
+    items.push({
+      kind: 'Ingreso',
+      descripcion: i.descripcion || 'Ingreso',
+      monto: (parseAmount(i.monto) || 0),
+      fecha: i.fecha,
+      icon: 'fas fa-arrow-up text-green-500'
     });
   });
-  
-  // Agregar últimos 3 gastos (incluyendo gastos compartidos que son del usuario)
-  (APP_STATE.data.gastos || []).slice(0, 3).forEach(gasto => {
-    actividades.push({
-      tipo: 'gasto',
-      descripcion: gasto.descripcion,
-      monto: gasto.monto,
-      fecha: gasto.fecha,
-      icono: 'fas fa-arrow-down text-red-500'
+
+  (APP_STATE.data.gastos || []).forEach(g => {
+    if (!g.fecha) return;
+    items.push({
+      kind: 'Gasto',
+      descripcion: g.descripcion || 'Gasto',
+      monto: (parseAmount(g.monto) || 0),
+      fecha: g.fecha,
+      icon: 'fas fa-arrow-down text-red-500'
     });
   });
-  
-  // Ordenar por fecha
-  actividades.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
-  
-  if (actividades.length === 0) {
+
+  (APP_STATE.data.gastos_compartidos || []).forEach(g => {
+    if (!g.fecha) return;
+    const eU = String(g.email_usuario||'').toLowerCase();
+    const eP = String(g.email_pareja||'').toLowerCase();
+    const isMinePair = (eU === myEmail && eP === partnerEmail) || (eU === partnerEmail && eP === myEmail);
+    if (!isMinePair) return;
+
+    const pct = parseFloat(g.porcentaje_tu ?? 50);
+    const isOwner = (eU === myEmail);
+    const myPct = isOwner ? pct : (100 - pct);
+    const total = (parseAmount(g.monto) || 0);
+    const myShare = total * (myPct / 100);
+
+    items.push({
+      kind: 'Gasto compartido',
+      descripcion: g.descripcion || 'Compartido',
+      monto: myShare,
+      fecha: g.fecha,
+      icon: 'fas fa-user-friends text-blue-600',
+      extra: `Total ${fmtMoney(total)} • Tu parte ${myPct}%`
+    });
+  });
+
+  items.sort((a,b) => new Date(b.fecha) - new Date(a.fecha));
+
+  if (items.length === 0) {
     container.innerHTML = `
       <div class="p-6 text-center text-gray-500">
         <i class="fas fa-inbox text-4xl mb-3"></i>
@@ -1519,25 +1735,24 @@ function updateRecentActivity() {
       </div>`;
     return;
   }
-  
-  let html = '';
-  actividades.slice(0, 5).forEach(act => {
-    html += `
-      <div class="p-4 border-b border-gray-100 flex items-center gap-3">
-        <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
-          <i class="${act.icono}"></i>
+
+  container.innerHTML = items.slice(0, 12).map(it => `
+    <div class="p-4 border-b border-gray-100 flex items-center gap-3">
+      <div class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center">
+        <i class="${it.icon}"></i>
+      </div>
+      <div class="flex-1">
+        <div class="flex items-center justify-between gap-3">
+          <div class="font-medium text-gray-900">${escapeHTML(it.descripcion)}</div>
+          <div class="${it.kind === 'Ingreso' ? 'text-green-600' : 'text-red-600'} font-semibold">${fmtMoney(it.monto)}</div>
         </div>
-        <div class="flex-1 min-w-0">
-          <div class="font-semibold text-gray-900 truncate">${escapeHtml(act.descripcion)}</div>
-          <div class="text-xs text-gray-500">${formatDate(act.fecha)}</div>
+        <div class="text-xs text-gray-500 flex items-center justify-between gap-3">
+          <span>${escapeHTML(it.kind)} • ${formatDate(it.fecha)}</span>
+          ${it.extra ? `<span>${escapeHTML(it.extra)}</span>` : ``}
         </div>
-        <div class="font-bold ${act.tipo === 'ingreso' ? 'text-green-600' : 'text-red-600'}">
-          ${fmtMoney(act.monto)}
-        </div>
-      </div>`;
-  });
-  
-  container.innerHTML = html;
+      </div>
+    </div>
+  `).join('');
 }
 
 // =========================================================
@@ -3391,7 +3606,7 @@ async function deleteCard(cardId) {
   showLoading(true);
   
   try {
-    const result = await APIService.eliminar('tarjeta', cardId);
+    const result = await APIService.eliminar('tarjetas', cardId);
     if (result.success) {
       showAlert('Tarjeta eliminada', 'success');
       await reloadData();
