@@ -9,8 +9,8 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="FinanceApp" />
-  <meta name="application-name" content="FinanceApp" />
+  <meta name="apple-mobile-web-app-title" content="Utech Finance" />
+  <meta name="application-name" content="Utech Finance" />
   <meta name="msapplication-TileColor" content="#0f766e" />
   <meta name="msapplication-tap-highlight" content="no" />
   
@@ -19,7 +19,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="icon-192.png" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   
-  <title>FinanceApp - Gestión Financiera Personal</title>
+  <title>Utech Finance - Gestión Financiera Personal</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -363,13 +363,23 @@
   <!-- Login Screen -->
   <div id="loginScreen" class="login-container">
     <div class="login-card">
-      <div class="text-center mb-8">
-        <div class="w-16 h-16 bg-primary rounded-full flex items-center justify-center mx-auto mb-4">
-          <i class="fas fa-chart-line text-2xl text-white"></i>
-        </div>
-        <h1 class="text-3xl font-bold text-gray-900 mb-2">Utech Finance</h1>
-        <p class="text-gray-600">Gestión financiera personal y compartida</p>
-      </div>
+      <div class="text-center mb-6">
+  <div class="flex justify-center mb-0">
+    <img src="utech.png" alt="UTech" class="w-40 h-40 object-contain">
+  </div>
+
+  <h1 class="text-xl font-semibold text-gray-900 leading-none -mt-2">
+    UTech Finance
+  </h1>
+
+  <p class="text-sm text-gray-500 mt-1">
+    Gestión financiera personal y compartida
+  </p>
+</div>
+
+
+
+
 
       <!-- Formulario de Login -->
       <div class="w-full text-left mb-6">
@@ -417,6 +427,20 @@
           </div>
         </div>
       </div>
+<div class="text-center mt-6">
+  <p class="text-xs text-gray-400">
+    Desarrollado por
+    <a
+      href="https://www.linkedin.com/in/ricardo-ugarte/"
+      target="_blank"
+      class="font-medium text-gray-500 hover:text-primary transition"
+    >
+      Utech · Ricardo Ugarte
+    </a>
+  </p>
+</div>
+
+      
 
       <!-- Botón de prueba rápida -->
       <div class="mt-4">
@@ -451,20 +475,27 @@
         Al continuar, aceptas nuestras políticas de privacidad
       </p>
     </div>
+    
   </div>
 
+  
   <!-- Main Application -->
   <div id="mainApp" class="hidden">
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header p-4 border-b border-gray-200">
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
-            <i class="fas fa-chart-line text-white"></i>
-          </div>
-          <span class="font-bold text-lg">FinanceApp</span>
-        </div>
-      </div>
+  <div class="flex items-center gap-3">
+    <img
+      src="utech.png"
+      alt="UTech"
+      class="w-14 h-14 object-contain"
+    />
+    <span class="font-semibold text-lg">
+      Finance
+    </span>
+  </div>
+</div>
+
 
       <div class="user-profile p-4 border-b border-gray-200">
         <div class="flex items-center gap-3">
@@ -473,7 +504,7 @@
           </div>
           <div class="flex-1">
             <div class="font-semibold" id="userName">John Doe</div>
-            <div class="text-sm text-gray-500 truncate" id="userEmail">john@example.com</div>
+            <div class="text-sm text-gray-500 truncate" id="userEmail">ricardougarte3@gmail.com</div>
           </div>
         </div>
       </div>
@@ -496,7 +527,7 @@
             </a>
             <a href="#" class="nav-item" data-section="shared">
               <i class="fas fa-users"></i>
-              <span>Gastos Compartidos</span>
+              <span>Compartir Gastos</span>
               <span class="badge badge-danger ml-auto" id="sharedBadge" style="display:none;">0</span>
             </a>
           </div>
@@ -531,7 +562,7 @@
         </div>
       </nav>
     </aside>
-
+    <div id="sidebarOverlay" class="sidebar-overlay hidden" aria-hidden="true"></div>
     <!-- Main Content -->
     <main class="main-content">
       <!-- Top Bar -->
