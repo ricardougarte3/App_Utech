@@ -165,6 +165,9 @@ function filterSharedForPair_(sharedRows, emailA, emailB) {
   });
 }
 
+function isMobile() {
+  return window.matchMedia('(max-width: 1023px)').matches;
+}
 
 
 
@@ -946,6 +949,39 @@ try {
   }
 }
 
+function initSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const menuToggle = document.getElementById('menuToggle');
+
+  if (!sidebar || !menuToggle) return;
+
+  // Evitar doble binding
+  if (menuToggle.dataset.bound === 'true') return;
+  menuToggle.dataset.bound = 'true';
+
+  menuToggle.addEventListener('click', () => {
+    if (!isMobile()) return;
+
+    sidebar.classList.add('active');
+    overlay?.classList.remove('hidden');
+  });
+
+  overlay?.addEventListener('click', () => {
+    sidebar.classList.remove('active');
+    overlay.classList.add('hidden');
+  });
+
+  document.querySelectorAll('#sidebar .nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      if (!isMobile()) return;
+
+      sidebar.classList.remove('active');
+      overlay?.classList.add('hidden');
+    });
+  });
+}
+
 
 function showLogin() {
   $('#loginScreen')?.classList.remove('hidden');
@@ -955,10 +991,14 @@ function showLogin() {
 function showMainApp() {
   $('#loginScreen')?.classList.add('hidden');
   $('#mainApp')?.classList.remove('hidden');
+
+  initSidebar();   // 👈 CLAVE
+
   updateUserUI();
   initYearSelects();
   loadAll();
 }
+
 
 function updateUserUI() {
   setText('userName', APP_STATE.user?.name || 'Usuario');
