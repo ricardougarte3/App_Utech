@@ -2066,6 +2066,8 @@ APP_STATE.data.gastos = todosLosGastos;
     const metodo = metodoMap[item.metodo_pago] || 'Efectivo';
     
     const montoTotal = parseAmount(item.monto);
+    let montoMostrar = montoTotal; // por defecto
+
     
     // Para gastos compartidos: mostrar observación con participación
     let observacion = '';
@@ -2073,8 +2075,21 @@ APP_STATE.data.gastos = todosLosGastos;
     
     if (item.compartido === 'true' || item.porcentaje_tu) {
       const porcentaje = parseAmount(item.porcentaje_tu) || 50;
-      const miParte = montoTotal * (porcentaje / 100);
-      const partePareja = montoTotal - miParte;
+
+const myEmail = (APP_STATE.user?.email || '').toLowerCase();
+const ownerEmail = String(item.email_usuario || '').toLowerCase();
+
+const isOwner = ownerEmail === myEmail;
+
+// Si yo cargué el gasto, porcentaje_tu es mío
+// Si lo cargó mi pareja, mi porcentaje es el complemento
+const myPct = isOwner ? porcentaje : (100 - porcentaje);
+
+const miParte = montoTotal * (myPct / 100);
+const partePareja = montoTotal - miParte;
+montoMostrar = miParte; // 🔥 ESTE ES EL ARREGLO CLAVE
+
+
       
       badgeCompartido = '<span class="badge badge-success ml-2">Compartido</span>';
       observacion = `
@@ -2101,7 +2116,27 @@ let infoCuotas = '';
 if (item.tipo === 'credit' && item.cuotas_totales && parseInt(item.cuotas_totales) > 1) {
   const cuotaActual = item.cuota_actual || 1;
   const cuotasTotales = parseInt(item.cuotas_totales) || 1;
-  const montoTotal = parseAmount(item.monto_total) || (parseAmount(item.monto) * cuotasTotales);
+  const montoCompraTotal = parseAmount(item.monto_total) || (parseAmount(item.monto) * cuotasTotales);
+
+// Parte del usuario en la compra total
+let montoCompraUsuario = montoCompraTotal;
+
+// Si es compartido, calcular solo mi parte
+if (item.compartido === 'true' || item.porcentaje_tu) {
+  const porcentaje = parseAmount(item.porcentaje_tu) || 50;
+
+  const myEmail = (APP_STATE.user?.email || '').toLowerCase();
+  const ownerEmail = String(item.email_usuario || '').toLowerCase();
+
+  const isOwner = ownerEmail === myEmail;
+  const myPct = isOwner ? porcentaje : (100 - porcentaje);
+
+  montoCompraUsuario = montoCompraTotal * (myPct / 100);
+}
+
+// Mi cuota real
+const cuotaUsuario = montoCompraUsuario / cuotasTotales;
+
   
   infoCuotas = `<div class="text-xs text-purple-600 mt-1">
     <i class="fas fa-calendar-alt mr-1"></i> Cuota ${cuotaActual}/${cuotasTotales} • Total: ${fmtMoney(montoTotal)}
@@ -2137,7 +2172,7 @@ if (item.tipo === 'credit' && item.cuotas_totales && parseInt(item.cuotas_totale
             ${infoCuotas}
           </div>
           <div class="flex items-center gap-3 shrink-0">
-            <div class="font-bold text-red-600 text-right text-lg">${fmtMoney(montoTotal)}</div>
+            <div class="font-bold text-red-600 text-right text-lg">${fmtMoney(montoMostrar)}</div>
             <div class="flex gap-1">
               <button class="btn btn-sm btn-secondary bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm hover:bg-gray-300" onclick="editExpense('${item.id}')">
                 <i class="fas fa-edit"></i>
@@ -2310,18 +2345,25 @@ if (!APP_STATE.partner) {
   let totalGeneral = 0;
   
   filteredGastos.forEach(gasto => {
-    const meta = parseSharedMeta(gasto.estado);
+  const meta = parseSharedMeta(gasto.estado);
 
-    const monto = parseAmount(gasto.monto);
-    const porcentaje = parseAmount(gasto.porcentaje_tu) || 50;
-    
-    const miParte = monto * (porcentaje / 100);
-    const partePareja = monto - miParte;
-    
-    totalGeneral += monto;
-    totalYoDebo += miParte;
-    totalParejaDebe += partePareja;
-  });
+  const monto = parseAmount(gasto.monto);
+  const porcentaje = parseAmount(gasto.porcentaje_tu) || 50;
+
+  const myEmail = (APP_STATE.user?.email || '').toLowerCase();
+  const ownerEmail = String(gasto.email_usuario || '').toLowerCase();
+
+  const isOwner = ownerEmail === myEmail;
+  const myPct = isOwner ? porcentaje : (100 - porcentaje);
+
+  const miParte = monto * (myPct / 100);
+  const partePareja = monto - miParte;
+
+  totalGeneral += miParte;       // ← CLAVE
+  totalYoDebo += miParte;
+  totalParejaDebe += partePareja;
+});
+
   
   // Actualizar las 3 tarjetas
   setText('youOwe', fmtMoney(totalYoDebo));
@@ -2506,10 +2548,6 @@ async function loadIncomes() {
   
   list.innerHTML = html;
 }
-
-// =========================================================
-// SECCIÓN PROYECCIONES
-// =========================================================
 
 // =========================================================
 // SECCIÓN PROYECCIONES CON CUOTAS
