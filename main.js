@@ -2229,6 +2229,105 @@ function exportData() {
 }
 
 // =========================================================
+// ESCANEAR TICKET CON IA
+// =========================================================
+async function scanTicketWithAI(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target.result.split(',')[1];
+      const mediaType = file.type || 'image/jpeg';
+
+      try {
+        showToast('Analizando ticket...', 'info', 4000);
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1000,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: mediaType, data: base64 }
+                },
+                {
+                  type: 'text',
+                  text: `Analizá este ticket de compra y extraé la información.
+Respondé SOLO con un JSON sin markdown, con estos campos:
+{
+  "descripcion": "nombre del local o producto principal",
+  "monto": número sin puntos ni comas (ej: 21599.20),
+  "fecha": "YYYY-MM-DD",
+  "categoria": "una de: Alimentación, Transporte, Vivienda, Salud, Entretenimiento, Ropa, Educación, Servicios, Otros",
+  "metodo_pago": "cash | debit | credit | transfer",
+  "cuotas": número entero (1 si no hay cuotas)
+}`
+                }
+              ]
+            }]
+          })
+        });
+
+        const data = await response.json();
+        const text = data.content?.[0]?.text || '';
+        const clean = text.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(clean);
+        resolve(parsed);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function fillExpenseFormFromTicket(ticket) {
+  const form = $('#expenseForm');
+  if (!form) return;
+
+  if (ticket.descripcion) form.querySelector('[name="descripcion"]').value = ticket.descripcion;
+  if (ticket.monto)       form.querySelector('[name="monto"]').value       = ticket.monto;
+  if (ticket.fecha)       form.querySelector('[name="fecha"]').value        = ticket.fecha;
+  if (ticket.metodo_pago) form.querySelector('[name="metodo_pago"]').value  = ticket.metodo_pago;
+
+  // Categoría
+  if (ticket.categoria) {
+    const catSel = $('#expenseCategorySelect');
+    if (catSel) {
+      const opt = Array.from(catSel.options).find(o => o.value === ticket.categoria);
+      if (opt) catSel.value = ticket.categoria;
+    }
+  }
+
+  // Cuotas
+  if (ticket.cuotas && ticket.cuotas > 1) {
+    const cuotasInput = $('#cuotasInput');
+    if (cuotasInput) {
+      cuotasInput.value = ticket.cuotas;
+      const preview = $('#cuotaPreview');
+      const label   = $('#cuotaMensual');
+      if (preview && label) {
+        label.textContent = fmtMoney(round2(ticket.monto / ticket.cuotas));
+        preview.classList.remove('hidden');
+      }
+    }
+  }
+
+  // Si es crédito, mostrar campos de tarjeta
+  if (ticket.metodo_pago === 'credit') {
+    form.querySelector('[name="tipo"]').value = 'credito';
+    $('#creditCardFields')?.classList.remove('hidden');
+  }
+
+  showToast('✅ Ticket cargado correctamente', 'success');
+}
+
+// =========================================================
 // WIRE UI
 // =========================================================
 function wireUI() {
@@ -2270,6 +2369,27 @@ function wireUI() {
   // Expense
   $('#addExpenseBtn')?.addEventListener('click', () => openExpenseModal());
   $('#saveExpenseBtn')?.addEventListener('click', saveExpense);
+
+  // Escanear ticket
+  $('#scanTicketBtn')?.addEventListener('click', () => {
+    $('#ticketImageInput')?.click();
+  });
+
+  $('#ticketImageInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    showLoading(true);
+    try {
+      const ticket = await scanTicketWithAI(file);
+      fillExpenseFormFromTicket(ticket);
+    } catch (err) {
+      showToast('No se pudo leer el ticket. Completá manualmente.', 'warning');
+      console.error(err);
+    } finally {
+      showLoading(false);
+      e.target.value = '';
+    }
+  });
 
   // Expense tipo selector → show/hide credit fields
   const tipoSel = $('[name="tipo"]', $('#expenseForm'));

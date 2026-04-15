@@ -1465,6 +1465,12 @@
         </form>
       </div>
       <div class="modal-footer p-4 border-t border-gray-200 flex justify-end gap-2">
+        <!-- Input oculto para la cámara -->
+        <input type="file" id="ticketImageInput" accept="image/*" capture="environment" class="hidden">
+        <button type="button" id="scanTicketBtn"
+          class="btn bg-teal-50 border border-teal-300 text-teal-700 px-4 py-2 rounded-lg hover:bg-teal-100 flex items-center gap-2 mr-auto">
+          <i class="fas fa-camera"></i> Escanear ticket
+        </button>
         <button class="btn btn-secondary bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 modal-close">Cancelar</button>
         <button class="btn btn-accent bg-primary text-white px-4 py-2 rounded-lg hover:bg-teal-700" id="saveExpenseBtn">
           <i class="fas fa-save"></i> Guardar
