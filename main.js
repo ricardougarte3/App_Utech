@@ -497,9 +497,10 @@ async function loadAll() {
     // Cargar perfil del partner si existe
     if (APP_STATE.data.profile?.partner_email) {
   APP_STATE.partner = {
-    id: APP_STATE.data.profile.partner_id,
-    email: APP_STATE.data.profile.partner_email
-  };
+  id: APP_STATE.data.profile.partner_id,
+  email: APP_STATE.data.profile.partner_email,
+  nombre: APP_STATE.data.profile.partner_nombre || APP_STATE.data.profile.partner_email
+};
 } else {
   APP_STATE.partner = null;
 }
@@ -615,9 +616,16 @@ const isSamePeriod = (fechaStr) => {
   return true;
 };
 
+const isSamePeriod2 = (fechaStr, m, y) => {
+  if (!fechaStr) return false;
+  const d = new Date(fechaStr+'T00:00:00');
+  return d.getFullYear()===y && (d.getMonth()+1)===m;
+};
+
   
-  const prevMonth = selectedMonth === 1 ? 12 : selectedMonth - 1;
-  const prevYear  = selectedMonth === 1 ? selectedYear - 1 : selectedYear;
+  const now2 = new Date();
+  const prevMonth = selectedMonth ? (selectedMonth === 1 ? 12 : selectedMonth - 1) : now2.getMonth();
+  const prevYear  = selectedMonth === 1 ? (selectedYear||now2.getFullYear()) - 1 : (selectedYear||now2.getFullYear());
   const isPrevPeriod = (fechaStr) => {
     if (!fechaStr) return false;
     const d = new Date(fechaStr+'T00:00:00');
@@ -658,10 +666,23 @@ const isSamePeriod = (fechaStr) => {
       return s + parseAmount(g.monto) * myPct / 100;
     }, 0);
 
+  const sharedPrev = gastosAll
+    .filter(g => g.es_compartido && isPrevPeriod(g.fecha) && (g.user_id===uid || g.partner_id===uid))
+    .reduce((s,g) => {
+      const isOwner = g.user_id===uid;
+      const myPct   = isOwner ? (g.porcentaje_usuario||100) : (100-(g.porcentaje_usuario||100));
+      return s + parseAmount(g.monto) * myPct / 100;
+    }, 0);
+
+  const gastosPropiosMes = gastosAll
+    .filter(g => g.user_id===uid && !g.es_compartido && isSamePeriod(g.fecha))
+    .reduce((s,g) => s + parseAmount(g.monto), 0);
+
+  const gastosPropiosPrev = gastosAll
+    .filter(g => g.user_id===uid && !g.es_compartido && isPrevPeriod(g.fecha))
+    .reduce((s,g) => s + parseAmount(g.monto), 0);
+
   // ── Balance = ingresos - gastos propios (sin compartidos) ──
-  const gastosSoloMios = gastosAll
-    .filter(g => isSamePeriod(g.fecha) && g.user_id===uid && !g.es_compartido)
-    .reduce((s,g)=>s+parseAmount(g.monto),0);
   const balance = ingresosMes -gastosMes;
 
 
@@ -670,8 +691,10 @@ const isSamePeriod = (fechaStr) => {
     if (prev === 0) return curr > 0 ? 100 : 0;
     return Math.round(((curr - prev) / prev) * 100);
   };
-  const ingresosPct = pctChange(ingresosMes, ingresosPrev);
-  const gastosPct   = pctChange(gastosMes, gastosPrev);
+  const ingresosPct       = pctChange(ingresosMes, ingresosPrev);
+  const gastosPct         = pctChange(gastosMes, gastosPrev);
+  const gastosPropiosPct  = pctChange(gastosPropiosMes, gastosPropiosPrev);
+  const sharedPct         = pctChange(sharedMes, sharedPrev);
 
   const fmtPct = (pct, invertColor = false) => {
     const isPositive = pct >= 0;
@@ -687,19 +710,71 @@ const isSamePeriod = (fechaStr) => {
   const elIncome   = document.getElementById('monthlyIncome');
   const elExpenses = document.getElementById('monthlyExpenses');
   const elShared   = document.getElementById('sharedDebts');
-  const elPartner  = document.getElementById('partnerName');
-  const elHint     = document.getElementById('budgetHint');
+
+
+
+  // Ahorro = ingresos - gastos propios - mi parte compartida
+  const ahorroMes = ingresosMes - gastosPropiosMes - sharedMes;
 
   if (elBalance)  elBalance.textContent  = fmtMoney(balance);
   if (elIncome)   elIncome.textContent   = fmtMoney(ingresosMes);
-  if (elExpenses) elExpenses.textContent = fmtMoney(gastosMes);
+  if (elExpenses) elExpenses.textContent = fmtMoney(gastosPropiosMes);
   if (elShared)   elShared.textContent   = fmtMoney(sharedMes);
-  const elOwn = document.getElementById('ownExpenses');
-  if (elOwn) elOwn.textContent = fmtMoney(gastosSoloMios);
-  if (elPartner)  elPartner.textContent  = APP_STATE.partner?.nombre || APP_STATE.partner?.email || 'Sin pareja vinculada';
-  if (elHint) {
-    const mm = pad2(selectedMonth);
-    elHint.textContent = `${mm}/${selectedYear}`;
+
+  // Ahorro
+  const ahorroEl  = document.getElementById('ahorroMes');
+  const ahorroKPI = document.getElementById('ahorroMesKPI');
+  if (ahorroEl) {
+    ahorroEl.textContent = fmtMoney(ahorroMes);
+    ahorroEl.className = `card-value text-2xl font-bold mb-2 ${ahorroMes >= 0 ? 'text-green-600' : 'text-red-600'}`;
+  }
+  if (ahorroKPI) {
+    ahorroKPI.textContent = ahorroMes >= 0 ? 'Superávit este mes' : 'Déficit este mes';
+    ahorroKPI.className = `text-sm font-medium ${ahorroMes >= 0 ? 'text-green-600' : 'text-red-600'}`;
+  }
+
+  // KPI subtítulos
+  const elIngresosMesKPI = document.getElementById('ingresosMesKPI');
+  if (elIngresosMesKPI) elIngresosMesKPI.innerHTML = ingresosPrev > 0
+    ? fmtPct(ingresosPct, false)
+    : `<span class="text-gray-400">Sin datos mes anterior</span>`;
+
+  const elGastosPropiosKPI = document.getElementById('gastosPropiosKPI');
+  if (elGastosPropiosKPI) elGastosPropiosKPI.innerHTML = gastosPropiosPrev > 0
+    ? fmtPct(gastosPropiosPct, true)
+    : `<span class="text-gray-400">Sin datos mes anterior</span>`;
+
+  const elGastosCompartidosKPI = document.getElementById('gastosCompartidosKPI');
+  if (elGastosCompartidosKPI) elGastosCompartidosKPI.innerHTML = sharedPrev > 0
+    ? fmtPct(sharedPct, true)
+    : `<span class="text-gray-400">Tu parte con ${escapeHTML(APP_STATE.partner?.nombre || APP_STATE.partner?.email || 'tu pareja')}</span>`;
+  // KPI gastos vs mes anterior
+
+  const gastosMesAnterior = gastosAll
+    .filter(g => isSamePeriod2(g.fecha, prevMonth, prevYear) && (g.user_id===uid || g.partner_id===uid))
+    .reduce((s,g) => {
+      const pct = g.es_compartido ? (g.porcentaje_usuario ?? 100) : 100;
+      const myPct2 = g.es_compartido ? (g.user_id===uid ? pct : 100-pct) : 100;
+      return s + parseAmount(g.monto) * myPct2 / 100;
+    }, 0);
+
+  const diffGastos = gastosMesAnterior > 0
+    ? ((gastosMes - gastosMesAnterior) / gastosMesAnterior * 100).toFixed(1)
+    : null;
+
+  const kpiEl = document.getElementById('gastosMesKPI');
+  const kpiWrap = document.getElementById('gastosMesChange');
+  if (kpiEl && kpiWrap) {
+    if (diffGastos !== null) {
+      const subio = parseFloat(diffGastos) > 0;
+      kpiEl.textContent = `${subio ? '+' : ''}${diffGastos}% vs mes anterior`;
+      kpiWrap.className = `card-change text-sm flex items-center gap-1 ${subio ? 'text-red-600' : 'text-green-600'}`;
+      kpiWrap.querySelector('i').className = `fas ${subio ? 'fa-arrow-up' : 'fa-arrow-down'}`;
+    } else {
+      kpiEl.textContent = 'Sin datos mes anterior';
+      kpiWrap.className = 'card-change text-gray-500 text-sm flex items-center gap-1';
+      kpiWrap.querySelector('i').className = 'fas fa-minus';
+    }
   }
 
   // ── Subtítulos dinámicos de cada tarjeta ──
@@ -716,19 +791,32 @@ const isSamePeriod = (fechaStr) => {
   }
   if (cards[1]) {
     const sub = cards[1].querySelector('.card-change');
-    if (sub) sub.innerHTML = fmtPct(ingresosPct, false) +
-      ` &nbsp;·&nbsp; <span class="text-gray-500">${ingresosCount} fuente${ingresosCount!==1?'s':''}</span>`;
-  }
-  if (cards[2]) {
-    const sub = cards[2].querySelector('.card-change');
     if (sub) sub.innerHTML = gastosPrev > 0
       ? fmtPct(gastosPct, true)
       : `<i class="fas fa-info-circle text-gray-400"></i> <span class="text-gray-500">Sin datos mes anterior</span>`;
   }
+  if (cards[2]) {
+    const sub = cards[2].querySelector('.card-change');
+    if (sub) sub.innerHTML = fmtPct(ingresosPct, false) +
+      ` &nbsp;·&nbsp; <span class="text-gray-500">${ingresosCount} fuente${ingresosCount!==1?'s':''}</span>`;
+  }
   if (cards[3]) {
     const sub = cards[3].querySelector('.card-change');
+    if (sub) {
+      if (diffGastos !== null) {
+        const subio = parseFloat(diffGastos) > 0;
+        sub.innerHTML = `<i class="fas ${subio ? 'fa-arrow-up' : 'fa-arrow-down'}"></i> <span>${subio ? '+' : ''}${diffGastos}% vs mes anterior</span>`;
+        sub.className = `card-change text-sm flex items-center gap-1 ${subio ? 'text-red-600' : 'text-green-600'}`;
+      } else {
+        sub.innerHTML = `<i class="fas fa-minus"></i> <span class="text-gray-500">Sin datos mes anterior</span>`;
+        sub.className = 'card-change text-gray-500 text-sm flex items-center gap-1';
+      }
+    }
+  }
+  if (cards[4]) {
+    const sub = cards[4].querySelector('.card-change');
     if (sub) sub.innerHTML = APP_STATE.partner
-      ? `<i class="fas fa-user text-primary"></i> <span class="text-primary">${escapeHTML(APP_STATE.partner.email||'')}</span>`
+      ? `<i class="fas fa-user text-primary"></i> <span class="text-primary">${escapeHTML(APP_STATE.partner.nombre || APP_STATE.partner.email || '')}</span>`
       : `<i class="fas fa-user-slash text-gray-400"></i> <span class="text-gray-400">Sin pareja vinculada</span>`;
   }
 

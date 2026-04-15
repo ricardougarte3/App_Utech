@@ -633,66 +633,53 @@
           </div>
         </div>
 
-        <div class="cards-grid grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 mt-6">
+        <div class="cards-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
+
           <div class="card border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
             <div class="card-header flex justify-between items-center mb-4">
               <div class="card-title font-semibold text-gray-700">Balance Total</div>
               <div class="card-icon primary"><i class="fas fa-wallet"></i></div>
             </div>
-            <div class="card-value text-3xl font-bold text-gray-900 mb-2" id="totalBalance">$0.00</div>
-            <div class="card-change positive text-green-600 text-sm flex items-center gap-1">
-              <i class="fas fa-arrow-up"></i>
-              <span>+12.5% vs mes anterior</span>
-            </div>
+            <div class="card-value text-2xl font-bold text-gray-900 mb-2" id="totalBalance">$0</div>
+            <div class="text-sm text-gray-500">Situación acumulada</div>
           </div>
-
-          <div class="card border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
-  <div class="card-header flex justify-between items-center mb-4">
-    <div class="card-title font-semibold text-gray-700">Gastos Propios</div>
-    <div class="card-icon warning"><i class="fas fa-user"></i></div>
-  </div>
-  <div class="card-value text-3xl font-bold text-gray-900 mb-2" id="ownExpenses">$0.00</div>
-  <div class="card-change text-sm flex items-center gap-1" id="ownExpensesChange">
-    <i class="fas fa-info-circle text-gray-400"></i>
-    <span class="text-gray-500">Solo tus gastos</span>
-  </div>
-</div>
 
           <div class="card border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
             <div class="card-header flex justify-between items-center mb-4">
               <div class="card-title font-semibold text-gray-700">Ingresos del Mes</div>
               <div class="card-icon success"><i class="fas fa-arrow-up"></i></div>
             </div>
-            <div class="card-value text-3xl font-bold text-gray-900 mb-2" id="monthlyIncome">$0.00</div>
-            <div class="card-change positive text-green-600 text-sm flex items-center gap-1">
-              <i class="fas fa-plus"></i>
-              <span>3 fuentes de ingreso</span>
-            </div>
+            <div class="card-value text-2xl font-bold text-gray-900 mb-2" id="monthlyIncome">$0</div>
+            <div class="text-sm text-gray-500" id="ingresosMesKPI">—</div>
           </div>
 
           <div class="card border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
             <div class="card-header flex justify-between items-center mb-4">
-              <div class="card-title font-semibold text-gray-700">Gastos del Mes</div>
-              <div class="card-icon warning"><i class="fas fa-arrow-down"></i></div>
+              <div class="card-title font-semibold text-gray-700">Gastos Propios</div>
+              <div class="card-icon warning"><i class="fas fa-user"></i></div>
             </div>
-            <div class="card-value text-3xl font-bold text-gray-900 mb-2" id="monthlyExpenses">$0.00</div>
-            <div class="card-change negative text-red-600 text-sm flex items-center gap-1">
-              <i class="fas fa-exclamation-triangle"></i>
-              <span id="budgetHint">—</span>
-            </div>
+            <div class="card-value text-2xl font-bold text-gray-900 mb-2" id="monthlyExpenses">$0</div>
+            <div class="text-sm text-gray-500" id="gastosPropiosKPI">—</div>
           </div>
 
           <div class="card border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
             <div class="card-header flex justify-between items-center mb-4">
-              <div class="card-title font-semibold text-gray-700">Deudas Compartidas</div>
-              <div class="card-icon danger"><i class="fas fa-handshake"></i></div>
+              <div class="card-title font-semibold text-gray-700">Gastos Compartidos</div>
+              <div class="card-icon primary"><i class="fas fa-users"></i></div>
             </div>
-            <div class="card-value text-3xl font-bold text-gray-900 mb-2" id="sharedDebts">$0.00</div>
-            <div class="card-change text-gray-600 text-sm flex items-center gap-1">
-              <i class="fas fa-user"></i>
-              <span id="partnerName">Sin pareja vinculada</span>
-            </div>
+            <div class="card-value text-2xl font-bold text-gray-900 mb-2" id="sharedDebts">$0</div>
+            <div class="text-sm text-gray-500" id="gastosCompartidosKPI">Tu parte este período</div>
           </div>
+
+          <div class="card border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
+            <div class="card-header flex justify-between items-center mb-4">
+              <div class="card-title font-semibold text-gray-700">Ahorro del Mes</div>
+              <div class="card-icon success"><i class="fas fa-piggy-bank"></i></div>
+            </div>
+            <div class="card-value text-2xl font-bold mb-2" id="ahorroMes">$0</div>
+            <div class="text-sm" id="ahorroMesKPI">—</div>
+          </div>
+
         </div>
 
         <div class="charts-grid grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
